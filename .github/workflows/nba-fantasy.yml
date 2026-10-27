@@ -18,69 +18,180 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: nba-fantasy
-  cancel-in-progress: false
-
 jobs:
-  run:
+  # Um unico gate para toda a liga: o placar da NBA e o mesmo para todos os
+  # times, entao nao faz sentido pagar um spin-up por time para descobrir que
+  # nao ha jogo agora.
+  gate:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
     env:
       MODE: ${{ github.event.schedule == '0 13 * * *' && 'morning' || github.event.inputs.mode || 'gate' }}
+      # Janela do gate: 30 min antes de cada jogo. Com cron de 30 min, cada jogo
+      # cai em exatamente uma execucao -> um aviso por jogo, sem repeticao.
+      PREGAME_LEAD_MIN: "30"
+    steps:
+      - uses: actions/checkout@v4
+
+      # O gate so usa a stdlib, entao as execucoes "vazias" (a maioria) nao
+      # gastam setup de Python nem pip.
+      - name: Decidir se executa agora
+        id: gate
+        run: python3 gate.py
+
+  # Os times vem de listas posicionais nos secrets:
+  #
+  #   ESPN_TEAM_ID      = 7,9
+  #   EMAIL_TO          = marcos@x.com,amigo@y.com
+  #   TELEGRAM_CHAT_ID  = 111,XXX
+  #
+  # A ordem e o pareamento: a posicao N de ESPN_TEAM_ID e o time da posicao N
+  # dos destinatarios. ESPN_TEAM_ID e quem manda no tamanho da lista, porque sem
+  # time nao ha o que analisar.
+  #
+  # Este job conta as entradas e monta o matrix so com os indices, entao nenhum
+  # e-mail ou chat id aparece na lista de jobs do Actions.
+  times:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.load.outputs.matrix }}
+    env:
+      TEAM_IDS: ${{ secrets.ESPN_TEAM_ID }}
+      EMAILS: ${{ secrets.EMAIL_TO }}
+      CHATS: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - name: Contar times
+        id: load
+        run: |
+          set -u
+          clean=$(printf '%s' "$TEAM_IDS" | tr -d ' ')
+          if [ -z "$clean" ]; then
+            echo "erro: ESPN_TEAM_ID vazio. Defina um ou mais team ids separados por virgula." >&2
+            exit 1
+          fi
+
+          count=$(printf '%s' "$clean" | awk -F',' '{print NF}')
+
+          # Aviso quando as listas de destinatarios tem tamanho diferente: as
+          # posicoes que faltam ficam sem aquele canal (nao herdam de ninguem).
+          n_mail=$(printf '%s' "$EMAILS" | tr -d ' ' | awk -F',' 'NF{print NF}')
+          n_chat=$(printf '%s' "$CHATS" | tr -d ' ' | awk -F',' 'NF{print NF}')
+          echo "times=$count emails=${n_mail:-0} chats=${n_chat:-0}"
+          if [ "${n_mail:-0}" -ne "$count" ]; then
+            echo "aviso: EMAIL_TO tem ${n_mail:-0} entrada(s) para $count time(s)" >&2
+          fi
+          if [ "${n_chat:-0}" -ne "$count" ]; then
+            echo "aviso: TELEGRAM_CHAT_ID tem ${n_chat:-0} entrada(s) para $count time(s)" >&2
+          fi
+
+          matrix=$(python3 -c \
+            'import json,sys; n=int(sys.argv[1]); print(json.dumps({"include":[{"index":i} for i in range(n)]}))' \
+            "$count")
+          echo "matrix=$matrix"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  agente:
+    needs: [gate, times]
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Cada time roda no proprio runner, entao .cache e reports/ nao colidem. O
+    # grupo por indice evita que duas execucoes do mesmo time se sobreponham.
+    concurrency:
+      group: nba-fantasy-${{ matrix.index }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.times.outputs.matrix) }}
+    env:
+      MODE: ${{ github.event.schedule == '0 13 * * *' && 'morning' || github.event.inputs.mode || 'gate' }}
+      INDEX: ${{ matrix.index }}
+      # Listas completas, na ordem dos times. O passo "Resolver destinatario"
+      # recorta a posicao INDEX de cada uma.
+      ALL_TEAM_IDS: ${{ secrets.ESPN_TEAM_ID }}
+      ALL_EMAILS: ${{ secrets.EMAIL_TO }}
+      ALL_CHATS: ${{ secrets.TELEGRAM_CHAT_ID }}
+      # Credenciais da liga: compartilhadas por todos os times.
       ESPN_LEAGUE_ID: ${{ secrets.ESPN_LEAGUE_ID }}
-      ESPN_TEAM_ID: ${{ secrets.ESPN_TEAM_ID }}
       ESPN_SWID: ${{ secrets.ESPN_SWID }}
       ESPN_S2: ${{ secrets.ESPN_S2 }}
       TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       SMTP_HOST: ${{ secrets.SMTP_HOST }}
       SMTP_PORT: ${{ secrets.SMTP_PORT }}
       SMTP_USER: ${{ secrets.SMTP_USER }}
       SMTP_PASS: ${{ secrets.SMTP_PASS }}
       EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
       EMAIL_FROM_NAME: ${{ vars.EMAIL_FROM_NAME || 'NBA Fantasy Daily Report' }}
-      EMAIL_TO: ${{ secrets.EMAIL_TO }}
-      # Janela do gate: 30 min antes de cada jogo. Com cron de 30 min, cada jogo
-      # cai em exatamente uma execucao -> um aviso por jogo, sem repeticao.
-      PREGAME_LEAD_MIN: "30"
-      ADDS_USED: ${{ vars.ADDS_USED }}
 
     steps:
       - uses: actions/checkout@v4
 
-      # O gate roda antes de instalar o Python do projeto: ele so usa a stdlib,
-      # entao as execucoes "vazias" (a maioria) nao gastam setup nem pip.
-      - name: Decidir se executa agora
-        id: gate
-        run: python3 gate.py
+      # Recorta a posicao INDEX das tres listas. Uma entrada vazia (ou um
+      # placeholder como "XXX") desliga aquele canal para este time — nao cai no
+      # destinatario de outro, senao o relatorio vazaria para a pessoa errada.
+      - name: Resolver destinatario
+        run: |
+          set -u
+
+          pick() {
+            python3 - "$1" "$2" <<'PY'
+          import sys
+          items = [x.strip() for x in sys.argv[1].split(",")]
+          i = int(sys.argv[2])
+          print(items[i] if 0 <= i < len(items) else "")
+          PY
+          }
+
+          team_id=$(pick "${ALL_TEAM_IDS:-}" "$INDEX")
+          email=$(pick "${ALL_EMAILS:-}" "$INDEX")
+          chat=$(pick "${ALL_CHATS:-}" "$INDEX")
+
+          if [ -z "$team_id" ]; then
+            echo "erro: nenhum ESPN_TEAM_ID na posicao $INDEX" >&2
+            exit 1
+          fi
+
+          # O chat id do Telegram e sempre numerico (grupos usam negativo).
+          # Qualquer outra coisa ("XXX", vazio, lixo) significa nao configurado.
+          case "$chat" in
+            -*) ;;
+            *[!0-9]*) [ -n "$chat" ] && echo "aviso: chat id '$chat' nao e numerico; Telegram desligado para este time" >&2; chat="" ;;
+          esac
+
+          echo "ESPN_TEAM_ID=$team_id" >> "$GITHUB_ENV"
+          echo "EMAIL_TO=$email" >> "$GITHUB_ENV"
+          echo "TELEGRAM_CHAT_ID=$chat" >> "$GITHUB_ENV"
+
+          echo "time #$INDEX -> team_id=$team_id | " \
+               "email=${email:-<nenhum>} | telegram=${chat:-<nenhum>}"
 
       - uses: actions/setup-python@v5
-        if: steps.gate.outputs.run == 'true'
         with:
           python-version: "3.12"
 
       - name: Instalar dependencias
-        if: steps.gate.outputs.run == 'true'
         run: pip install -r requirements.txt
 
       - name: Rodar o agente
-        if: steps.gate.outputs.run == 'true'
         run: |
           # A execucao da manha traz o relatorio completo; as demais (pre-jogo)
           # trazem so escalacao e IR.
-          ARGS="--notify"
+          ARGS="--notify --out-dir reports/time-$INDEX"
           if [ "$MODE" != "morning" ]; then
             ARGS="$ARGS --lineup-only"
           fi
-          echo "modo: $MODE | args: $ARGS"
+          echo "time: #$INDEX | modo: $MODE | args: $ARGS"
+          echo "destinatario: ${EMAIL_TO:-<sem email>} / ${TELEGRAM_CHAT_ID:-<sem telegram>}"
           python nba-fantasy-agent.py $ARGS
 
       - name: Guardar o relatorio
-        if: steps.gate.outputs.run == 'true'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: relatorio-${{ github.run_id }}
-          path: reports/
+          name: relatorio-time-${{ matrix.index }}-${{ github.run_id }}
+          path: reports/time-${{ matrix.index }}/
           retention-days: 7
           if-no-files-found: ignore

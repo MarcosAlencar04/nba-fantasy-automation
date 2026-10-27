@@ -30,13 +30,12 @@ python nba-fantasy-agent.py --notify
 Opcoes uteis:
 
 ```bash
-python nba-fantasy-agent.py --notify --adds-used 2
+python nba-fantasy-agent.py --notify
 python nba-fantasy-agent.py                  # sem notificar, so imprime
 python nba-fantasy-agent.py --refresh        # ignora o cache
 python nba-fantasy-agent.py --source espn    # forca a fonte ESPN
 ```
 
-- `--adds-used N`: quantos dos 5 adds do matchup voce ja gastou.
 - `--refresh`: ignora o cache e baixa os dados de novo.
 - `--source`: `auto` (detecta), `nba` ou `espn`.
 - `--lineup-only`: relatorio enxuto, so escalacao e IR (usado no pre-jogo).
@@ -88,7 +87,7 @@ A mensagem e a mesma nos dois canais: o resumo do dia (lineup, vendas, adds e tr
 nao o relatorio completo. Se nao houver nada a sinalizar, nada e enviado.
 
 O **email** vai em HTML com **tema escuro**: cabecalho com o nome do time (e o logo, quando a
-liga tem um), faixa com FP projetado / adds restantes / nivel de reposicao, escalacao na ordem
+liga tem um), faixa com FP projetado / titulares / nivel de reposicao, escalacao na ordem
 dos slots com foto do jogador, **disputa por vaga** (quem entra e quem sai quando ha mais de 10
 elegiveis), **IR e status** (com ate 3 opcoes de drop para ativar), **sinais da semana** com
 alvos de compra nos elencos rivais, add/drop e trocas avaliadas **dos dois
@@ -153,12 +152,71 @@ diferentes, voce recebe tres emails — um por jogo, no momento de cada um.
 ### Configurar (uma vez, no GitHub)
 
 1. **Settings > Secrets and variables > Actions > Secrets**: adicione
-   `ESPN_LEAGUE_ID`, `ESPN_TEAM_ID`, `ESPN_SWID`, `ESPN_S2`, `TELEGRAM_TOKEN`,
-   `TELEGRAM_CHAT_ID`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`,
-   `EMAIL_FROM`, `EMAIL_TO`.
-2. **Aba Variables**: opcionalmente `ADDS_USED`. Nao precisa de `ROSTER_CSV`:
-   o elenco vem do ESPN pelo `ESPN_TEAM_ID`.
+   `ESPN_LEAGUE_ID`, `ESPN_SWID`, `ESPN_S2`, `TELEGRAM_TOKEN`, `SMTP_HOST`,
+   `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `EMAIL_FROM`. Depois os tres
+   posicionais: `ESPN_TEAM_ID`, `EMAIL_TO` e `TELEGRAM_CHAT_ID` (veja abaixo).
+2. **Aba Variables**: opcionalmente `EMAIL_FROM_NAME` (nome do remetente).
+   Nao precisa de `ROSTER_CSV`: o elenco vem do ESPN pelo `ESPN_TEAM_ID`.
 3. **Actions > NBA Fantasy > Run workflow** com `mode = morning` para testar.
+
+### Varios times, um relatorio por dono
+
+Os times vem de **listas posicionais** nos secrets. A ordem e o pareamento: a
+posicao N de `ESPN_TEAM_ID` e o time que envia para a posicao N de `EMAIL_TO` e
+de `TELEGRAM_CHAT_ID`.
+
+```dotenv
+ESPN_TEAM_ID=7,9
+EMAIL_TO=marcos@exemplo.com,amigo@exemplo.com
+TELEGRAM_CHAT_ID=123456789,XXX
+```
+
+| Secret | Papel |
+|---|---|
+| `ESPN_TEAM_ID` | `teamId=` na URL de cada time. **Define o tamanho da lista** |
+| `EMAIL_TO` | destinatario de cada time. Entrada vazia = nao envia email |
+| `TELEGRAM_CHAT_ID` | chat de cada time. Vazio ou nao numerico = nao envia |
+
+`ESPN_TEAM_ID` e quem manda no tamanho porque sem time nao ha o que analisar. Se
+`EMAIL_TO` ou `TELEGRAM_CHAT_ID` tiver menos entradas, os times que sobram ficam
+sem aquele canal — o job roda e apenas nao notifica por ele.
+
+**Placeholder `XXX` funciona como "nao configurado".** O chat id do Telegram e
+sempre numerico (grupos usam negativo), entao qualquer outra coisa e ignorada
+com um aviso. Da para deixar `XXX` no secret e trocar depois quando a pessoa
+mandar `/start` no bot.
+
+Para varios destinatarios **no mesmo time**, use `;` dentro da posicao:
+
+```dotenv
+EMAIL_TO=marcos@x.com;esposa@x.com,amigo@y.com
+```
+
+**Entrada vazia nunca herda o destinatario de outro time** — e de proposito:
+sem isso, o relatorio de uma pessoa cairia na caixa de entrada de outra.
+
+Localmente (`.env`), a lista tambem funciona: o agente usa a **primeira**
+posicao de `ESPN_TEAM_ID` e envia para todos os enderecos de `EMAIL_TO`.
+
+No Actions, o fluxo tem tres jobs:
+
+| Job | Quantos | O que faz |
+|---|---|---|
+| `gate` | 1 | decide se ha jogo na janela; se nao, nada mais roda |
+| `times` | 1 | conta as entradas de `ESPN_TEAM_ID` e monta o matrix de indices |
+| `agente` | 1 por time | recorta a posicao do time e roda a analise |
+
+O gate fica **fora** do matrix de proposito: o placar da NBA e o mesmo para
+todos, entao nao faz sentido pagar um spin-up por time para descobrir que nao ha
+jogo agora. Cada execucao do `agente` tem runner proprio, entao `.cache` e
+`reports/` nao colidem, e `concurrency` e por indice para que os times rodem em
+paralelo.
+
+O matrix carrega apenas o **indice**, entao e-mails e chat ids nao aparecem na
+lista de jobs do Actions.
+
+Para o Telegram de outra pessoa funcionar, ela precisa ter aberto conversa com o
+seu bot (mandar `/start`) — o `chat_id` nao existe antes disso.
 
 O relatorio fica como artifact de cada execucao (7 dias).
 

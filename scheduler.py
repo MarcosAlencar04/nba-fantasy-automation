@@ -163,9 +163,6 @@ def next_events(state, now=None):
 
 def run_agent(kind, dry_run=False):
     args = [sys.executable, str(AGENT), "--notify"]
-    adds = (os.getenv("ADDS_USED") or "").strip()
-    if adds.isdigit():
-        args += ["--adds-used", adds]
     if dry_run:
         log(f"[dry-run] {kind}: {' '.join(args)}")
         return 0

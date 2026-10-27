@@ -71,7 +71,6 @@ SLOT_ELIG = {
     "G": {"PG", "SG"}, "F": {"SF", "PF"}, "UTIL": BASE_POS,
 }
 MAX_CENTERS = 4
-ADDS_LIMIT = 5
 IR_SLOTS = 3
 BENCH_SLOTS = 4
 TRADE_DEADLINE = date(2027, 3, 22)
@@ -109,6 +108,25 @@ def cached(key, ttl_h, fn, refresh=False):
 
 def _env(name):
     return (os.getenv(name) or "").strip()
+
+
+def _env_first(name):
+    """Primeira entrada de uma variavel em lista (separada por virgula).
+
+    ESPN_TEAM_ID aceita lista posicional quando rodando na nuvem, onde cada time
+    e uma execucao. Rodando local, vale o primeiro.
+    """
+    return _env(name).split(",")[0].strip()
+
+
+def _chat_id_set() -> bool:
+    """O chat id do Telegram e numerico (grupos usam negativo).
+
+    Qualquer outra coisa ("XXX", vazio, lixo) significa nao configurado, para
+    que um placeholder no .env nao vire uma tentativa de envio com erro.
+    """
+    raw = _env("TELEGRAM_CHAT_ID")
+    return bool(raw) and (raw.lstrip("-").isdigit())
 
 
 def missing_env(*names):
@@ -1473,7 +1491,7 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
     summary = []
     L = []  # linhas do relatorio
     digest = dict(date=today, lineup=[], bench=[], alerts=[], adds=[], trades=[], ir=[],
-                  total=0.0, week="", adds_left=0, repl=0.0, empty_slots=0,
+                  total=0.0, week="", repl=0.0, empty_slots=0,
                   ir_used=0, ir_free=IR_SLOTS, tight=[], lineup_choice=False,
                   sells=[], buys=[], changes=[], changes_known=False,
                   changes_leftover=0,
@@ -1589,13 +1607,11 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
         pool[c["pid"]] = c
 
     # ---- cabecalho ---------------------------------------------------
-    adds_left = max(0, ADDS_LIMIT - opts.adds_used)
-    digest.update(week=f"{week_start:%d/%m} a {week_end:%d/%m}", adds_left=adds_left,
-                  repl=repl, adds_limit=ADDS_LIMIT,
+    digest.update(week=f"{week_start:%d/%m} a {week_end:%d/%m}",
+                  repl=repl,
                   trade_days=(TRADE_DEADLINE - today).days)
     L += [f"# Relatorio NBA Fantasy - {today.strftime('%d/%m/%Y')} ({today.strftime('%A')})",
           f"Semana do confronto: {week_start.strftime('%d/%m')} a {week_end.strftime('%d/%m')} | "
-          f"Adds restantes no matchup: **{adds_left}/{ADDS_LIMIT}** | "
           f"Prazo de trocas: {(TRADE_DEADLINE - today).days} dias ({TRADE_DEADLINE.strftime('%d/%m/%Y')})",
           f"Nivel de reposicao usado: ~{repl:.0f} FP/jogo | Candidatos: {fa_label}",
           ""]
@@ -1931,7 +1947,7 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
         L.append("Nenhum add/drop passa do corte de ganho (score >= 8). Seu elenco esta competitivo frente aos candidatos analisados.")
     else:
         L.append(f"Ordenado por ganho = FP extra no lineup ate {horizon_end.strftime('%d/%m')} + {HORIZON_EXTRA_GAMES} x ganho por jogo "
-                 f"(valor de medio prazo). Voce tem {adds_left} add(s) restante(s).")
+                 f"(valor de medio prazo).")
         L.append("")
         rows = []
         for r in picks:
@@ -1956,10 +1972,8 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
         L += md_table(["Contratar", "Dropar", "Proj/jogo (add vs drop)", "Jogos sem.",
                        "FP na semana (otim/pess)", "Ganho semana (FP)",
                        "Ganho/jogo", "% dono ESPN", "Fase", "Obs"], rows)
-        for r in picks[:adds_left or 0]:
+        for r in picks:
             summary.append(f"ADD {r['add']['name']} / DROP {r['drop']['name']} (ganho semana {r['wg']:+.0f} FP, {r['pg']:+.1f}/jogo)")
-        if adds_left == 0:
-            L += ["", "Voce ja usou os 5 adds deste matchup: as sugestoes valem a partir do proximo."]
         L += ["", "Waivers duram 1 dia: o claim processa no dia seguinte. Se o candidato for DTD, confira o status antes."]
     L.append("")
 
@@ -2101,9 +2115,11 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
 # --------------------------------------------------------------------------
 def send_telegram(text):
     miss = missing_env("TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID")
+    if not miss and not _chat_id_set():
+        miss.append("TELEGRAM_CHAT_ID (nao numerico)")
     if miss:
         print(f"Telegram: ignorado (faltando no .env: {', '.join(miss)})", file=sys.stderr)
-        return False
+        return None
     try:
         r = requests.post(f"https://api.telegram.org/bot{_env('TELEGRAM_TOKEN')}/sendMessage",
                           data={"chat_id": _env("TELEGRAM_CHAT_ID"), "text": text[:3900]}, timeout=20)
@@ -2163,7 +2179,10 @@ def sender_header(user, to):
 def send_email(subject, text, html=None):
     host = _env("SMTP_HOST")
     user, pwd = _env("SMTP_USER"), normalize_password(_env("SMTP_PASS"))
-    to = [a.strip() for a in _env("EMAIL_TO").split(",") if a.strip()]
+    # Aceita varios destinatarios. Na nuvem o workflow ja recortou a posicao deste
+    # time, entao aqui sobra so quem deve receber este relatorio. O ';' permite
+    # mais de um destinatario dentro do mesmo time.
+    to = [a.strip() for a in re.split(r"[,;]", _env("EMAIL_TO")) if a.strip()]
     miss = []
     if not host:
         miss.append("SMTP_HOST")
@@ -2173,7 +2192,7 @@ def send_email(subject, text, html=None):
         miss.append("SMTP_USER/SMTP_PASS (preencha os dois ou nenhum)")
     if miss:
         print(f"Email: ignorado (faltando no .env: {', '.join(miss)})", file=sys.stderr)
-        return False
+        return None
     try:
         port = int(_env("SMTP_PORT") or 587)
     except ValueError:
@@ -2300,7 +2319,7 @@ def render_email_html(d):
                  + _stat("IR em uso", f"{ir_used}/{IR_SLOTS}"))
     else:
         stats = (_stat("FP projetado hoje", f"{d.get('total', 0):.0f}", ORANGE)
-                 + _stat("Adds restantes", f"{d.get('adds_left', 0)}/{d.get('adds_limit', 5)}")
+                 + _stat("Titulares", f"{len(d.get('lineup') or [])}")
                  + _stat("Nivel de reposicao", f"{d.get('repl', 0):.0f}"))
     rows.append(
         f'<tr><td style="padding:6px 20px 0 20px"><table role="presentation" width="100%" '
@@ -2525,7 +2544,8 @@ def render_email_html(d):
                 f'<span style="color:{GREEN_FG};font-weight:700">{a["wg"]:+.0f} FP</span> '
                 f'({a["pg"]:+.1f}/jogo){scen}{(" · " + owned) if owned else ""}</div>'
                 f'</td></tr>')
-        rows.append(_section("Contratar / dropar", f"{d.get('adds_left', 0)} add(s) restante(s) neste matchup"))
+        rows.append(_section("Contratar / dropar",
+                             "Sugestoes de manutencao do elenco — confira seu limite de adds no ESPN"))
         rows.append(f'<tr><td style="padding:0 28px 8px 28px"><table role="presentation" width="100%" '
                     f'cellpadding="0" cellspacing="0" border="0">{"".join(body)}</table></td></tr>')
 
@@ -2708,7 +2728,8 @@ def render_email_html(d):
 
 
 def notify(summary, today, telegram=False, email=False, digest=None):
-    subject = f"NBA Fantasy {today.strftime('%d/%m')}"
+    team = (digest or {}).get("team_name") or ""
+    subject = f"NBA Fantasy {today.strftime('%d/%m')}" + (f" · {team}" if team else "")
     text = subject + "\n\n" + "\n".join(summary)
     results = {}
     if telegram:
@@ -2716,9 +2737,15 @@ def notify(summary, today, telegram=False, email=False, digest=None):
     if email:
         html = render_email_html(digest) if digest else None
         results["email"] = send_email(subject, text, html=html)
-    failed = [k for k, ok in results.items() if not ok]
+    # None = canal nao configurado para este destinatario; so False e falha de fato.
+    if results and all(v is None for v in results.values()):
+        print("Notificacao: nenhum canal configurado para este destinatario.",
+              file=sys.stderr)
+        return True
+    failed = [k for k, ok in results.items() if ok is False]
     if failed:
-        print(f"Notificacao: falhou em {', '.join(failed)} (o relatorio foi gerado normalmente).", file=sys.stderr)
+        print(f"Notificacao: falhou em {', '.join(failed)} (o relatorio foi gerado normalmente).",
+              file=sys.stderr)
     return not failed
 
 
@@ -2731,7 +2758,6 @@ def main():
                     help="ID do seu time no ESPN (ou a variavel ESPN_TEAM_ID)")
     ap.add_argument("--source", choices=["auto", "nba", "espn"], default="auto",
                     help="fonte dos game logs: auto (detecta), nba_api ou API publica do ESPN")
-    ap.add_argument("--adds-used", type=int, default=0, help="adds ja usados neste matchup (limite 5)")
     ap.add_argument("--recent", type=int, default=5, help="janela 'recente' em jogos")
     ap.add_argument("--replacement", type=float, default=24.0, help="FP/jogo de nivel de reposicao")
     ap.add_argument("--date", default=None, help="AAAA-MM-DD (padrao: hoje no fuso da NBA)")
@@ -2752,8 +2778,8 @@ def main():
     prev_season = prev_season_str(season)
 
     team_id = opts.team_id
-    if team_id is None and _env("ESPN_TEAM_ID").isdigit():
-        team_id = int(_env("ESPN_TEAM_ID"))
+    if team_id is None and _env_first("ESPN_TEAM_ID").isdigit():
+        team_id = int(_env_first("ESPN_TEAM_ID"))
 
     roster_rows = []
     print(f"Coletando dados da NBA ({season})...", file=sys.stderr)

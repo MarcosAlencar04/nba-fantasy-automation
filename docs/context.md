@@ -125,7 +125,7 @@ Funções principais:
 |---|---|
 | `nba_fantasy_agent.py` | O agente. |
 | `gate.py` | Portão do GitHub Actions: libera a execução só na janela de 30 min antes do 1º jogo. |
-| `.github/workflows/nba-fantasy.yml` | Agendamento na nuvem (cron da manhã + a cada 30 min). |
+| `.github/workflows/nba-fantasy.yml` | Agendamento na nuvem (cron da manhã + a cada 30 min, 1 job por time). |
 | `scheduler.py` | Agendador alternativo para rodar localmente (loop contínuo). |
 | `systemd/nba-fantasy.service` | Unit do systemd para o agendador local. |
 | `roster.csv` | Removido: o elenco vem da API do ESPN. |
@@ -138,7 +138,7 @@ Funções principais:
 
 ### Argumentos de linha de comando
 
-`--team-id`, `--source {auto,nba,espn}`, `--adds-used N`, `--recent N` (janela recente, padrão 5 jogos), `--replacement X` (nível de reposição, padrão 24), `--date AAAA-MM-DD`, `--telegram`, `--email`, `--notify`, `--lineup-only`, `--refresh`, `--out-dir`.
+`--team-id`, `--source {auto,nba,espn}`, `--recent N` (janela recente, padrão 5 jogos), `--replacement X` (nível de reposição, padrão 24), `--date AAAA-MM-DD`, `--telegram`, `--email`, `--notify`, `--lineup-only`, `--refresh`, `--out-dir`.
 
 ### Modo enxuto (`--lineup-only`)
 
@@ -220,7 +220,8 @@ Jogador marcado para IR sai da lista de drops (não precisa ser cortado) e não 
 
 - O candidato é avaliado contra **cada** jogador dropável do elenco (IR e quem vai para o IR ficam fora). Mede-se a diferença no `week_value` (soma dos lineups ótimos dos dias restantes), o que já respeita posições e quantidade de jogos.
 - **Score** = ganho na semana + 6 × ganho por jogo (o 6 é `HORIZON_EXTRA_GAMES`, que representa valor além da semana). Só entram sugestões com score ≥ 8.
-- Respeita o limite de 4 centers e o saldo de adds do matchup.
+- Respeita o limite de 4 centers.
+- O **numero de adds restantes nao e controlado pelo agente**: o ESPN nao expoe esse contador e quem administra e o usuario. O relatorio so aponta as oportunidades.
 - Se faltarem 2 dias ou menos na semana, o horizonte se estende até a semana seguinte.
 - **Nível de reposição:** 5º melhor free agent do ESPN, ou 24 FP/jogo se não houver lista (ajustável com `--replacement`).
 
@@ -331,7 +332,49 @@ O **número de remoções é limitado ao número de reservas aptos**. Se o otimi
 
 A comparação de escalação é por **conjunto de nomes**, para não acusar mudança quando o otimizador apenas permuta posições. Se `lineupSlot` vier vazio, `changes_known=False` e a notificação é enviada mesmo assim — falhar aberto é melhor do que não avisar.
 
-### 5.11 Cache
+### 5.11 Vários times, um destinatário por time
+
+Os times vêm de **listas posicionais nos secrets**, sem arquivo de configuração. `fetch_espn()` já lê todos os times da liga em uma chamada, então o custo de um time extra é apenas mais uma execução do agente — a coleta de dados da NBA é idêntica.
+
+```dotenv
+ESPN_TEAM_ID=7,9
+EMAIL_TO=marcos@x.com,amigo@y.com
+TELEGRAM_CHAT_ID=123456789,XXX
+```
+
+| Secret | Papel |
+|---|---|
+| `ESPN_TEAM_ID` | **define o tamanho da lista** (sem time não há o que analisar) |
+| `EMAIL_TO` | destinatário da posição N |
+| `TELEGRAM_CHAT_ID` | chat da posição N |
+
+O workflow tem três jobs:
+
+| Job | Quantos | Papel |
+|---|---|---|
+| `gate` | 1 | roda `gate.py` e expõe `run` |
+| `times` | 1 | conta as entradas de `ESPN_TEAM_ID` → matrix `[{index: 0}, {index: 1}]` |
+| `agente` | 1 por índice | recorta a posição das três listas e roda a análise |
+
+O gate fica **fora** do matrix porque o placar da NBA é global: rodá-lo por time multiplicaria spin-ups para chegar à mesma resposta. O matrix só expõe `index`, então e-mails e chat ids não aparecem na UI do Actions.
+
+**Semântica das posições** (crítica para privacidade):
+
+| Entrada | Significa |
+|---|---|
+| vazia | canal desligado — **não** herda o destinatário de outro time |
+| `XXX` ou não numérica em `TELEGRAM_CHAT_ID` | Telegram desligado para aquele time |
+| lista mais curta que `ESPN_TEAM_ID` | os times excedentes ficam sem aquele canal |
+
+Destinatário não tem fallback de propósito: se tivesse, o relatório do time de outra pessoa cairia na caixa de entrada do dono do repositório.
+
+`send_telegram`/`send_email` devolvem `None` quando o canal não está configurado, e `notify` trata `None` como ignorado — só `False` (erro real) conta como falha. Sem isso, um time configurado só para email acusaria falha de Telegram em todo run.
+
+`_chat_id_set()` valida que o chat id é numérico (aceitando negativo para grupos), para que um placeholder como `XXX` no `.env` não vire tentativa de envio com erro.
+
+**Rodando local**, a lista também vale: `_env_first()` usa a primeira posição de `ESPN_TEAM_ID`, e `send_email` aceita `,` e `;` como separadores — então `EMAIL_TO` com vários endereços manda para todos, sem noção de posição.
+
+### 5.12 Cache
 
 Game log da temporada atual: 3 h. Temporada anterior: 7 dias. Calendário: 12 h. Estatísticas dos times: 6 h. Posições: 72 h. `--refresh` ignora.
 
@@ -439,7 +482,7 @@ EMAIL_TO=
 |---|---|---|
 | `LINEUP_SLOTS` | PG SG SF PF C G F UTIL×3 | topo |
 | `MAX_CENTERS` | 4 | topo |
-| `ADDS_LIMIT` | 5 | topo |
+| `HORIZON_EXTRA_GAMES` | 6 | `run_analysis` |
 | `TRADE_DEADLINE` | 22/03/2027 | topo |
 | `HORIZON_EXTRA_GAMES` | 6 | topo |
 | `LUCK_W` | (4, 2, 2) | topo |
@@ -457,6 +500,9 @@ EMAIL_TO=
 | Recusa máxima aceita | 70% | `find_trades` |
 | Fator de cenário | 0,7 da sorte revertida ± 0,25 do desvio | `scenario_points` |
 | Remoções na escalação | ≤ número de reservas aptos | `plan_lineup_changes` |
+| Folga de elenco na troca | +2 jogadores | `trade_legal` |
+| Times por execução | 1 por entrada de `ESPN_TEAM_ID` | workflow |
+| Job do gate | 1 por execução (não por time) | workflow |
 
 ---
 
