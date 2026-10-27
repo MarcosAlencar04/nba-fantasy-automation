@@ -135,6 +135,10 @@ recomendada com a que esta realmente no ESPN (campo `lineupSlot`) e envia apenas
 - titular que nao joga hoje (ou `OUT`/`IR`, ou `DTD`) **e** existe alguem no banco que joga
   hoje para entrar no lugar.
 
+Cada reserva abre **uma** vaga: se ha 5 titulares sem jogo e so 2 reservas que jogam hoje,
+apenas 2 remocoes sao sugeridas (uma por reserva). Os outros 3 viram uma nota unica — nao ha
+nada a fazer neles, entao repetir seria so ruido.
+
 Se nem o titular nem o reserva jogam, trocar nao muda nada e nada e sugerido. Se a escalacao
 ja estiver correta, nenhum email e enviado (o relatorio continua no artifact). Se o ESPN nao
 informar o `lineupSlot`, o agente envia mesmo assim (fail-open).

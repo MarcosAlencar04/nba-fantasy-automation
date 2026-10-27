@@ -1201,6 +1201,61 @@ def trade_accept(p, q, their_roster, their_record, theirs):
                 factors=factors, veto=veto)
 
 
+def plan_lineup_changes(current, recom, entering, by_name, today):
+    """Mudancas de escalacao, pareando cada reserva apto com UMA saida.
+
+    Cada jogador do banco abre uma vaga so. Com 5 titulares sem jogo e 2 reservas
+    aptos, apenas 2 precisam sair: listar os 5 nao muda o resultado final e deixa
+    o relatorio repetitivo. Retorna (changes, leftover), onde `leftover` e quantos
+    titulares sem jogo seguem escalados por falta de banco para entrar.
+    """
+    changes = []
+    for e in entering:
+        changes.append(dict(kind="entrar", name=e["name"],
+                            slot=recom[norm_name(e["name"])][1],
+                            fp=e["dv"][today], proj=e["proj_fppg"],
+                            why="esta no banco do ESPN e joga hoje"))
+
+    # Sem ninguem do banco apto a entrar, tirar o titular nao muda nada:
+    # nao reportamos remocao nem lesao nesse caso.
+    if not entering:
+        return changes, 0
+
+    outgoing = []
+    for key, (name, slot) in current.items():
+        if key in recom:
+            continue
+        p = by_name.get(key)
+        st = p["status"] if p else "ACTIVE"
+        fp = p["dv"][today] if p else 0.0
+        if st in ("OUT", "IR"):
+            sev, kind, why = 0, "lesionado", "fora por lesao e segue escalado"
+        elif st == "DTD":
+            sev, kind, why = 1, "risco", "day-to-day escalado"
+        elif fp <= 0:
+            sev, kind, why = 2, "sair", "nao joga hoje"
+        else:
+            # Titular joga: a troca por um reserva melhor ja aparece como
+            # "adicionar" no outro lado, entao nao duplicamos o aviso aqui.
+            continue
+        outgoing.append(dict(kind=kind, name=name, slot=slot, fp=fp,
+                             proj=(p["proj_fppg"] if p else 0.0),
+                             why=why, sev=sev))
+
+    # Sai primeiro quem nao pontua de jeito nenhum: fora por lesao e quem nao
+    # joga hoje (0 FP garantido). Um DTD que joga hoje fica por ultimo, porque
+    # tirar ele pode custar pontos. Empate em FP desempata pela gravidade.
+    outgoing.sort(key=lambda c: (c["fp"], c["sev"]))
+    subs = sorted(entering, key=lambda x: -x["dv"][today])
+    for sub, out in zip(subs, outgoing):
+        sub_txt = f"{sub['name']} joga hoje e renderia {sub['dv'][today]:.0f} FP"
+        changes.append(dict(kind=out["kind"], name=out["name"], slot=out["slot"],
+                            fp=out["fp"], proj=out["proj"],
+                            why=f"{out['why']}; {sub_txt}",
+                            sub=sub["name"], sub_fp=sub["dv"][today]))
+    return changes, max(0, len(outgoing) - len(subs))
+
+
 def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
                  fa_players=None, other_teams=None, espn_status=None):
     notes = []
@@ -1210,6 +1265,7 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
                   total=0.0, week="", adds_left=0, repl=0.0, empty_slots=0,
                   ir_used=0, ir_free=IR_SLOTS, tight=[], lineup_choice=False,
                   sells=[], buys=[], changes=[], changes_known=False,
+                  changes_leftover=0,
                   lineup_only=bool(getattr(opts, "lineup_only", False)))
 
     def finalize():
@@ -1480,48 +1536,32 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
     entering = [e for e in entering if e["dv"][today] > 0]
 
     changes = []
+    leftover_out = 0
     if current:
-        for e in entering:
-            changes.append(dict(kind="entrar", name=e["name"], slot=recom[norm_name(e["name"])][1],
-                                fp=e["dv"][today], proj=e["proj_fppg"],
-                                why="esta no banco do ESPN e joga hoje"))
+        changes, leftover_out = plan_lineup_changes(current, recom, entering,
+                                                    by_name, today)
 
-        # Sem ninguem do banco apto a entrar, tirar o titular nao muda nada:
-        # nao reportamos remocao nem lesao nesse caso.
-        if entering:
-            sub = max(entering, key=lambda x: x["dv"][today])
-            sub_txt = f"{sub['name']} joga hoje e renderia {sub['dv'][today]:.0f} FP"
-            for key, (name, slot) in current.items():
-                if key in recom:
-                    continue
-                p = by_name.get(key)
-                st = p["status"] if p else "ACTIVE"
-                fp = p["dv"][today] if p else 0.0
-                if st in ("OUT", "IR"):
-                    kind = "lesionado"
-                    why = f"fora por lesao e segue escalado; {sub_txt}"
-                elif st == "DTD":
-                    kind = "risco"
-                    why = f"day-to-day escalado; {sub_txt}"
-                elif fp <= 0:
-                    kind = "sair"
-                    why = f"nao joga hoje; {sub_txt}"
-                else:
-                    # Titular joga: a troca por um reserva melhor ja aparece como
-                    # "adicionar" no outro lado, entao nao duplicamos o aviso aqui.
-                    continue
-                changes.append(dict(kind=kind, name=name, slot=slot, fp=fp,
-                                    proj=(p["proj_fppg"] if p else 0.0), why=why,
-                                    sub=sub["name"], sub_fp=sub["dv"][today]))
     digest["changes"] = changes
+    digest["changes_leftover"] = leftover_out
     digest["changes_known"] = bool(current)
 
     if changes:
-        L += [f"**Mudancas necessarias na escalacao** ({len(changes)}):"]
+        n_swap = sum(1 for c in changes if c.get("sub"))
+        n_add = len(changes) - n_swap
+        parts = [f"{n_swap} troca(s)"] if n_swap else []
+        if n_add:
+            parts.append(f"{n_add} entrada(s) sem vaga livre" if n_swap else f"{n_add} entrada(s)")
+        L += [f"**Mudancas necessarias na escalacao** — {', '.join(parts)}:"]
         for c in changes:
             L.append(f"- [{c['slot']}] **{c['name']}**: {c['why']} ({c['fp']:.1f} FP hoje)")
+        if leftover_out:
+            L.append(f"- Os outros {leftover_out} titular(es) sem jogo hoje seguem escalados: "
+                     f"nao ha mais ninguem no banco para entrar, entao nao ha o que trocar.")
         L.append("")
-        for c in changes[:3]:
+        # O resumo prioriza as saidas: sao elas que o usuario executa.
+        prio = [c for c in changes if c["kind"] != "entrar"] + \
+               [c for c in changes if c["kind"] == "entrar"]
+        for c in prio[:3]:
             summary.append(f"ESCALACAO: {c['why'].split(';')[0]} {c['name']} ({c['slot']})")
     elif current:
         L += ["Escalacao ja esta igual a recomendada: nenhuma mudanca necessaria.", ""]
@@ -2150,9 +2190,17 @@ def render_email_html(d):
                 f'letter-spacing:.4px">{esc(label)}</span></div>'
                 f'<div style="color:{MUTED};font-size:12px;margin-top:4px">{esc(c["why"])} '
                 f'({c["fp"]:.1f} FP hoje)</div>{sub}</div>')
+        n_swap = sum(1 for c in changes if c.get("sub"))
         rows.append(_section("Mudancas necessarias na escalacao",
-                             f"{len(changes)} ajuste(s) para hoje"))
+                             f"{n_swap} troca(s) para hoje" if n_swap
+                             else f"{len(changes)} ajuste(s) para hoje"))
         rows.append(f'<tr><td style="padding:0 28px">{"".join(cards)}</td></tr>')
+        if d.get("changes_leftover"):
+            rows.append(
+                f'<tr><td style="padding:2px 28px 0 28px"><div style="color:{MUTED};'
+                f'font-size:12px;line-height:1.5">Os outros {d["changes_leftover"]} '
+                f'titular(es) sem jogo hoje seguem escalados: nao ha mais ninguem no banco '
+                f'para entrar, entao nao ha o que trocar.</div></td></tr>')
     elif d.get("changes_known"):
         rows.append(_section("Mudancas necessarias na escalacao"))
         rows.append(f'<tr><td style="padding:0 28px"><div style="color:{GREEN_FG};font-size:13px">'

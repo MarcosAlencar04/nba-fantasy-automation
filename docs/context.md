@@ -195,6 +195,10 @@ Problema de atribuição jogador × slot que maximiza a soma dos valores. Elegib
 
 **Disputa por vaga:** quando o elenco ativo tem mais jogadores do que os 10 slots, o relatório mostra os 3 slots mais apertados. Para cada titular, o melhor concorrente no banco e a margem em FP. Margem ≤ 3 FP vira alerta ("pode entrar no lugar de"); acima disso, o titular é marcado como seguro.
 
+**Mudanças na escalação — uma saída por reserva.** O relatório compara o lineup otimizado com o que está de fato escalado no ESPN e pareia cada reserva apto com **uma única** saída (`plan_lineup_changes`). Com 5 titulares sem jogo e apenas 2 reservas que jogam hoje, só 2 são recomendados para sair — listar os 5 não mudaria o resultado final e só deixaria o email repetitivo. Os titulares que sobram ganham uma nota única ("os outros N seguem escalados: não há mais ninguém no banco para entrar").
+
+Ordem de saída: primeiro quem tem **0 FP garantido** (fora por lesão, IR ou time sem jogo hoje), depois quem tem menor nota. Um DTD que joga hoje fica por último, porque tirá-lo pode custar pontos. O pareamento é guloso: o melhor reserva assume a vaga da pior saída.
+
 ### 5.5 IR e status
 
 A liga tem 3 vagas de IR. A seção avalia cada jogador contra elas usando `injuryStatus`, o slot atual (`lineupSlot`) e a data prevista de retorno (`expectedReturnDate`) que o ESPN fornece:
@@ -302,6 +306,8 @@ Não há deduplicação: cada jogo gera o seu próprio aviso, o que é o comport
 Se **nem o titular nem o reserva jogam**, trocar não muda nada: a remoção não é reportada. Quando o titular joga mas um reserva renderia mais, o aviso aparece apenas como `entrar` (do outro lado), sem duplicar como `sair`.
 
 A troca é validada no **conjunto**, não por slot: o reserva pode entrar em SF e o titular deslizar para UTIL. Por isso a condição é "existe alguém no banco apto a entrar", e não "existe alguém elegível a este slot".
+
+O **número de remoções é limitado ao número de reservas aptos**. Se o otimizador tira 5 titulares sem jogo mas só há 2 reservas que jogam hoje, apenas 2 remoções são listadas (uma por reserva) e os outros 3 viram uma nota agregada.
 
 A comparação de escalação é por **conjunto de nomes**, para não acusar mudança quando o otimizador apenas permuta posições. Se `lineupSlot` vier vazio, `changes_known=False` e a notificação é enviada mesmo assim — falhar aberto é melhor do que não avisar.
 
@@ -424,6 +430,7 @@ EMAIL_TO=
 | Teto da perda dele na troca | 50% do valor semanal recebido | `run_analysis` |
 | Recusa máxima aceita | 70% | `run_analysis` |
 | Fator de cenário | 0,7 da sorte revertida ± 0,25 do desvio | `scenario_points` |
+| Remoções na escalação | ≤ número de reservas aptos | `plan_lineup_changes` |
 
 ---
 
