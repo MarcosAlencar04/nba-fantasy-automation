@@ -107,12 +107,18 @@ O workflow e `.github/workflows/nba-fantasy.yml`. Ele usa dois cron triggers:
 | Cron (UTC) | Quando | O que faz |
 |---|---|---|
 | `0 13 * * *` | 10h BRT | relatorio completo |
-| `*/15 * * * *` | a cada 15 min | `gate.py` libera 15 min antes de **cada** jogo do dia |
+| `*/15 * * * *` | a cada 15 min | `gate.py` libera a execucao 30 min antes de **cada** jogo do dia |
 
 O `gate.py` olha apenas o relogio: consulta o placar do ESPN, lista os jogos que ainda vao
-comecar e libera a execucao quando algum deles comeca dentro de `PREGAME_LEAD_MIN`. Assim
-cada jogo tem sua propria reavaliacao da escalacao, inclusive quando varios comecam em
+comecar e libera a execucao quando algum deles comeca dentro de `PREGAME_LEAD_MIN` (30 min).
+Assim cada jogo tem sua propria reavaliacao da escalacao, inclusive quando varios comecam em
 sequencia curta (ex.: 19:30, 20:00 e 20:30).
+
+**Por que 30 min de janela com cron de 15 min:** o cron do GitHub e *best-effort* — em horario
+de pico ele atrasa e pode descartar um tick. Com duas tentativas por jogo (30 min e 15 min
+antes), um tick perdido nao significa perder a avaliacao. Para o segundo tick nao virar email
+repetido, o agente guarda o fingerprint das mudancas ja avisadas em `.cache/notified.json`,
+preservado entre execucoes pelo cache do Actions.
 
 A execucao da manha recebe `--notify`; as demais recebem `--notify --lineup-only`, entao o
 email do pre-jogo traz so **escalacao** e **IR** (sem sinais, add/drop e trocas).
@@ -128,8 +134,8 @@ Se nem o titular nem o reserva jogam, trocar nao muda nada e nada e sugerido. Se
 ja estiver correta, nenhum email e enviado (o relatorio continua no artifact). Se o ESPN nao
 informar o `lineupSlot`, o agente envia mesmo assim (fail-open).
 
-> `PREGAME_LEAD_MIN` deve ser igual ou maior que o intervalo do cron. Com 15/15 a janela
-de cada jogo pega exatamente uma execucao.
+O mesmo conjunto de mudancas nunca e avisado duas vezes no mesmo dia. Se o alerta mudar (outro
+jogador machucou, por exemplo), o fingerprint muda e o email e enviado de novo.
 
 ### Configurar (uma vez, no GitHub)
 

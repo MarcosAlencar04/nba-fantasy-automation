@@ -250,7 +250,25 @@ Só entram candidatos que estão **pontuando bem**: projeção ≥ nível de rep
 
 ### 5.10 Agendamento
 
-`gate.py` libera a execução quando **algum** jogo do dia começa dentro de `PREGAME_LEAD_MIN` (padrão 15 min). O cron roda a cada 15 min, então cada jogo tem sua própria reavaliação — inclusive jogos em sequência curta. A execução da manhã ignora o gate.
+`gate.py` libera a execução quando **algum** jogo do dia começa dentro de `PREGAME_LEAD_MIN` (padrão 30 min). O cron roda a cada 15 min, então cada jogo tem **duas** tentativas de avaliação — uma 30 e outra 15 min antes do tip-off. Isso cobre o cron *best-effort* do GitHub, que atrasa e eventualmente descarta ticks em horário de pico. A execução da manhã ignora o gate.
+
+Para o segundo tick não repetir o aviso, o agente grava o fingerprint do conjunto de mudanças em `.cache/notified.json`:
+
+```
+{"date": "2026-10-27", "fp": "77eaa93ebd3d3ba4"}
+```
+
+O fingerprint é `sha1(dia + kind:nome:slot ordenados)`. Regras:
+
+| Situação | Ação |
+|---|---|
+| Mesmo conjunto já avisado hoje | não envia |
+| Conjunto diferente (ex.: novo lesionado) | envia |
+| Escalação já correta | não envia |
+| ESPN sem `lineupSlot` (fail-open) | envia |
+| Envio falhou em algum canal | não grava o fingerprint (tenta no próximo tick) |
+
+O workflow preserva o arquivo com `actions/cache/restore` + `actions/cache/save` (chave `notified-<run_id>`, `restore-keys: notified-`), porque o runner é descartado a cada execução.
 
 **Notificação condicional no pré-jogo:** o agente compara a escalação recomendada (otimizador) com a que está realmente no ESPN (`lineupSlot`), sem precisar de estado entre execuções. Só envia quando há mudança **acionável**:
 
