@@ -1,0 +1,8 @@
+nba_api>=1.5
+espn-api>=0.39
+pandas
+numpy
+scipy
+requests
+python-dotenv
+tzdata
