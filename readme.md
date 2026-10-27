@@ -112,12 +112,13 @@ email do pre-jogo traz so **escalacao** e **IR** (sem sinais, add/drop e trocas)
 **O pre-jogo so notifica quando ha mudanca necessaria.** O agente compara a escalacao
 recomendada com a que esta realmente no ESPN (campo `lineupSlot`) e envia apenas se houver:
 
-- jogador no banco que deveria ser titular;
-- titular que renderia menos que uma opcao do banco;
-- titular lesionado (`OUT`/`IR`) ou day-to-day escalado.
+- jogador no banco que joga hoje e deveria ser titular;
+- titular que nao joga hoje (ou `OUT`/`IR`, ou `DTD`) **e** existe alguem no banco que joga
+  hoje para entrar no lugar.
 
-Se a escalacao ja estiver correta, nada e enviado (o relatorio continua sendo salvo no
-artifact). Se o ESPN nao informar o `lineupSlot`, o agente envia mesmo assim (fail-open).
+Se nem o titular nem o reserva jogam, trocar nao muda nada e nada e sugerido. Se a escalacao
+ja estiver correta, nenhum email e enviado (o relatorio continua no artifact). Se o ESPN nao
+informar o `lineupSlot`, o agente envia mesmo assim (fail-open).
 
 > `PREGAME_LEAD_MIN` deve ser igual ou maior que o intervalo do cron. Com 15/15 a janela
 de cada jogo pega exatamente uma execucao.

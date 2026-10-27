@@ -252,16 +252,20 @@ Só entram candidatos que estão **pontuando bem**: projeção ≥ nível de rep
 
 `gate.py` libera a execução quando **algum** jogo do dia começa dentro de `PREGAME_LEAD_MIN` (padrão 15 min). O cron roda a cada 15 min, então cada jogo tem sua própria reavaliação — inclusive jogos em sequência curta. A execução da manhã ignora o gate.
 
-**Notificação condicional no pré-jogo:** o agente compara a escalação recomendada (otimizador) com a que está realmente no ESPN (`lineupSlot`), sem precisar de estado entre execuções. Só envia quando há mudança:
+**Notificação condicional no pré-jogo:** o agente compara a escalação recomendada (otimizador) com a que está realmente no ESPN (`lineupSlot`), sem precisar de estado entre execuções. Só envia quando há mudança **acionável**:
 
-| Mudança | Peso |
+| Mudança | Condição |
 |---|---|
-| Jogador no banco que deveria ser titular | `entrar` |
-| Titular que renderia menos que o banco | `sair` |
-| Titular `OUT`/`IR` | `lesionado` |
-| Titular day-to-day | `risco` |
+| `entrar` | está no banco do ESPN, joga hoje e o otimizador o escalaria |
+| `sair` | está escalado, **não joga hoje** e há alguém do banco que joga |
+| `lesionado` | está escalado com `OUT`/`IR` e há alguém do banco que joga |
+| `risco` | está escalado com `DTD` e há alguém do banco que joga |
 
-A comparação é por **conjunto de nomes**, não por slot, para não acusar mudança quando o otimizador apenas permuta posições. Se `lineupSlot` vier vazio (fonte sem slot), `changes_known=False` e a notificação é enviada mesmo assim — falhar aberto é melhor do que não avisar.
+Se **nem o titular nem o reserva jogam**, trocar não muda nada: a remoção não é reportada. Quando o titular joga mas um reserva renderia mais, o aviso aparece apenas como `entrar` (do outro lado), sem duplicar como `sair`.
+
+A troca é validada no **conjunto**, não por slot: o reserva pode entrar em SF e o titular deslizar para UTIL. Por isso a condição é "existe alguém no banco apto a entrar", e não "existe alguém elegível a este slot".
+
+A comparação de escalação é por **conjunto de nomes**, para não acusar mudança quando o otimizador apenas permuta posições. Se `lineupSlot` vier vazio, `changes_known=False` e a notificação é enviada mesmo assim — falhar aberto é melhor do que não avisar.
 
 ### 5.11 Cache
 

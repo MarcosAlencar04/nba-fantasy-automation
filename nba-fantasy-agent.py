@@ -1325,29 +1325,47 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
                                                       LINEUP_SLOTS[sj])
              for sj, pi in assign}
     by_name = {norm_name(e["name"]): e for e in roster}
+
+    # Quem o otimizador colocaria em campo e nao esta escalado no ESPN agora.
+    # Como o lineup e uma atribuicao global (o reserva pode entrar em SF e o titular
+    # deslizar para UTIL), a existencia de troca e verificada no conjunto, nao por slot.
+    entering = [by_name[k] for k in recom if k not in current and k in by_name]
+    entering = [e for e in entering if e["dv"][today] > 0]
+
     changes = []
     if current:
-        for key, (name, slot) in recom.items():
-            if key not in current:
+        for e in entering:
+            changes.append(dict(kind="entrar", name=e["name"], slot=recom[norm_name(e["name"])][1],
+                                fp=e["dv"][today], proj=e["proj_fppg"],
+                                why="esta no banco do ESPN e joga hoje"))
+
+        # Sem ninguem do banco apto a entrar, tirar o titular nao muda nada:
+        # nao reportamos remocao nem lesao nesse caso.
+        if entering:
+            sub = max(entering, key=lambda x: x["dv"][today])
+            sub_txt = f"{sub['name']} joga hoje e renderia {sub['dv'][today]:.0f} FP"
+            for key, (name, slot) in current.items():
+                if key in recom:
+                    continue
                 p = by_name.get(key)
-                changes.append(dict(kind="entrar", name=name, slot=slot,
-                                    fp=(p["dv"][today] if p else 0.0),
-                                    proj=(p["proj_fppg"] if p else 0.0),
-                                    why="esta no banco do ESPN e deveria ser titular hoje"))
-        for key, (name, slot) in current.items():
-            if key in recom:
-                continue
-            p = by_name.get(key)
-            st = p["status"] if p else "ACTIVE"
-            if st in ("OUT", "IR"):
-                kind, why = "lesionado", "segue escalado mesmo fora por lesao"
-            elif st == "DTD":
-                kind, why = "risco", "day-to-day escalado: confirme antes do jogo"
-            else:
-                kind, why = "sair", "renderia menos que uma opcao no banco hoje"
-            changes.append(dict(kind=kind, name=name, slot=slot,
-                                fp=(p["dv"][today] if p else 0.0),
-                                proj=(p["proj_fppg"] if p else 0.0), why=why))
+                st = p["status"] if p else "ACTIVE"
+                fp = p["dv"][today] if p else 0.0
+                if st in ("OUT", "IR"):
+                    kind = "lesionado"
+                    why = f"fora por lesao e segue escalado; {sub_txt}"
+                elif st == "DTD":
+                    kind = "risco"
+                    why = f"day-to-day escalado; {sub_txt}"
+                elif fp <= 0:
+                    kind = "sair"
+                    why = f"nao joga hoje; {sub_txt}"
+                else:
+                    # Titular joga: a troca por um reserva melhor ja aparece como
+                    # "adicionar" no outro lado, entao nao duplicamos o aviso aqui.
+                    continue
+                changes.append(dict(kind=kind, name=name, slot=slot, fp=fp,
+                                    proj=(p["proj_fppg"] if p else 0.0), why=why,
+                                    sub=sub["name"], sub_fp=sub["dv"][today]))
     digest["changes"] = changes
     digest["changes_known"] = bool(current)
 
@@ -1357,7 +1375,7 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
             L.append(f"- [{c['slot']}] **{c['name']}**: {c['why']} ({c['fp']:.1f} FP hoje)")
         L.append("")
         for c in changes[:3]:
-            summary.append(f"ESCALACAO: {c['why'].split(':')[0]} {c['name']} ({c['slot']})")
+            summary.append(f"ESCALACAO: {c['why'].split(';')[0]} {c['name']} ({c['slot']})")
     elif current:
         L += ["Escalacao ja esta igual a recomendada: nenhuma mudanca necessaria.", ""]
 
@@ -1859,6 +1877,11 @@ def render_email_html(d):
         cards = []
         for c in changes:
             label, bg, fg = kind_style.get(c["kind"], ("Alterar", GREY_BG, GREY_FG))
+            sub = ""
+            if c.get("sub"):
+                sub = (f'<div style="color:{GREEN_FG};font-size:12px;margin-top:5px">'
+                       f'→ entra <span style="font-weight:700">{esc(c["sub"])}</span> '
+                       f'({c["sub_fp"]:.1f} FP)</div>')
             cards.append(
                 f'<div style="border-left:3px solid {fg};background:{SOFT};padding:11px 14px;'
                 f'border-radius:6px;margin-bottom:8px">'
@@ -1868,7 +1891,7 @@ def render_email_html(d):
                 f'background:{bg};color:{fg};font-size:10px;font-weight:700;text-transform:uppercase;'
                 f'letter-spacing:.4px">{esc(label)}</span></div>'
                 f'<div style="color:{MUTED};font-size:12px;margin-top:4px">{esc(c["why"])} '
-                f'({c["fp"]:.1f} FP hoje)</div></div>')
+                f'({c["fp"]:.1f} FP hoje)</div>{sub}</div>')
         rows.append(_section("Mudancas necessarias na escalacao",
                              f"{len(changes)} ajuste(s) para hoje"))
         rows.append(f'<tr><td style="padding:0 28px">{"".join(cards)}</td></tr>')
