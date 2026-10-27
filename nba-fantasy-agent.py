@@ -872,14 +872,41 @@ def nba_reachable(timeout=8):
 # Analise principal (funcao pura -> facilita testes)
 # --------------------------------------------------------------------------
 IR_ADVICE = {
-    "MOVER_PARA_IR": ("Mover para IR", "#dbeafe", "#1e40af"),
-    "ATIVAR": ("Ativar do IR", "#dcfce7", "#166534"),
-    "MANTER_NO_IR": ("Manter no IR", "#e5e7eb", "#4b5563"),
-    "MANTER": ("Manter", "#e5e7eb", "#4b5563"),
-    "IR_CHEIO": ("IR lotado", "#fef3c7", "#92400e"),
-    "DROPAR": ("Dropar", "#fee4e2", "#b42318"),
-    "OK": ("Sem acao", "#e5e7eb", "#4b5563"),
+    "MOVER_PARA_IR": ("Mover para IR", "#12233a", "#60a5fa"),
+    "ATIVAR": ("Ativar do IR", "#0f2a1d", "#4ade80"),
+    "MANTER_NO_IR": ("Manter no IR", "#232b39", "#9ca3af"),
+    "MANTER": ("Manter", "#232b39", "#9ca3af"),
+    "IR_CHEIO": ("IR lotado", "#2a2110", "#fbbf24"),
+    "DROPAR": ("Dropar", "#2a1215", "#f87171"),
+    "OK": ("Sem acao", "#232b39", "#9ca3af"),
 }
+
+
+def drop_options(candidate, roster, today, n=3):
+    """Tres candidatos a sair para abrir vaga ao jogador que vai ser ativado.
+
+    Ordena pelo valor efetivo mais baixo (projecao x chance de jogar), entao quem
+    esta fora por lesao aparece primeiro. Nunca devolve uma opcao sozinha.
+    """
+    out = []
+    for e in roster:
+        if e["pid"] == candidate["pid"] or e.get("in_ir"):
+            continue
+        eff = e["proj_fppg"] * avail_prob(e["status"], 0)
+        out.append((eff, e))
+    out.sort(key=lambda x: (x[0], x[1]["dv"].get(today, 0.0)))
+
+    picks = []
+    for eff, e in out[:n]:
+        if e["status"] in ("OUT", "IR"):
+            why = f"ja esta fora por lesao (libera {e['proj_fppg']:.0f} FP de projecao)"
+        elif e["status"] == "DTD":
+            why = f"day-to-day e o de menor projecao disponivel ({e['proj_fppg']:.0f}/jogo)"
+        else:
+            why = f"menor projecao do elenco ativo ({e['proj_fppg']:.0f}/jogo)"
+        picks.append(dict(name=e["name"], team=e["team"], proj=e["proj_fppg"],
+                          status=e["status"], why=why))
+    return picks
 
 
 def ir_advice(roster, today, repl):
@@ -887,7 +914,8 @@ def ir_advice(roster, today, repl):
 
     Regras praticas da liga (10 titulares + 4 banco + 3 IR):
       * Quem esta fora por lesao e volta tarde deve ocupar IR, liberando vaga ativa.
-      * Quem esta no IR mas o ESPN nao marca lesao esta desperdicando a vaga.
+      * Quem esta no IR e ja pode jogar deve ser ativado - e para isso alguem sai,
+        por isso a recomendacao sempre traz 3 opcoes de drop.
       * Day-to-day nao vale gastar IR (a vaga e escassa e ele pode jogar amanha).
       * Se o IR esta cheio, o pior ocupante precisa sair para outro entrar.
     """
@@ -908,23 +936,35 @@ def ir_advice(roster, today, repl):
         in_ir = e.get("in_ir", False)
         du = days_until(e.get("expected_return"))
         ret_txt = f"retorno previsto {e['expected_return']:%d/%m}" if du is not None else ""
-        advice, why = "OK", []
+        plays_today = e["dv"][today] > 0
+        advice, why, options = "OK", [], []
 
         if in_ir:
             if st in ("ACTIVE", "DTD"):
+                # pode ser ativado: a pergunta e quem sai para abrir a vaga
                 advice = "ATIVAR"
-                why.append("esta no IR mas o ESPN nao marca lesao")
-                if st == "DTD":
-                    why.append("day-to-day: confirme antes do jogo")
-                if e["dv"][today] > 0:
-                    why.append(f"renderia {e['dv'][today]:.0f} FP hoje")
+                why.append("esta no IR e pode jogar" if st == "ACTIVE"
+                           else "esta no IR e o ESPN so marca day-to-day")
+                if plays_today:
+                    why.append(f"joga hoje e renderia {e['dv'][today]:.0f} FP")
+                else:
+                    why.append("nao joga hoje, mas nao ha motivo para ocupar vaga no IR")
+                    if du is not None:
+                        why.append(ret_txt)
+                options = drop_options(e, roster, today)
+                if options:
+                    why.append(f"para ativar, drope um destes {len(options)}")
+                else:
+                    why.append("sem candidato claro a drop: o elenco esta no limite")
             else:
                 advice = "MANTER_NO_IR"
-                why.append("fora por lesao, IR e o lugar certo")
+                why.append("continua fora por lesao: nao ha como ativar")
                 if du is not None:
                     why += [ret_txt]
                     if du > 14:
                         why.append("ausencia longa: avalie trocar por FA")
+                else:
+                    why.append("sem previsao de retorno informada pelo ESPN")
         elif st == "OUT":
             if du is not None and 0 <= du <= 3:
                 advice = "MANTER"
@@ -951,7 +991,7 @@ def ir_advice(roster, today, repl):
         out.append(dict(name=e["name"], team=e["team"], status=st, in_ir=in_ir,
                         advice=advice, why=why, proj=e["proj_fppg"],
                         value_today=e["dv"][today], expected_return=e.get("expected_return"),
-                        days_out=du))
+                        days_out=du, options=options, plays_today=plays_today))
     return out, ir_used, ir_free
 
 
@@ -1003,11 +1043,11 @@ def trade_risk(p, q, their_roster, their_record, gain):
     score = int(max(2, min(97, round(score))))
     reject = 100 - score
     if reject <= 35:
-        label, color = "Baixo", ("#dcfce7", "#166534")
+        label, color = "Baixo", ("#10281c", "#4ade80")
     elif reject <= 60:
-        label, color = "Medio", ("#fef3c7", "#92400e")
+        label, color = "Medio", ("#2b2210", "#fbbf24")
     else:
-        label, color = "Alto", ("#fee4e2", "#b42318")
+        label, color = "Alto", ("#2a1417", "#f87171")
 
     veto = "alto" if gain > 8 else ("medio" if gain > 5 else "baixo")
     return dict(accept=score, reject=reject, label=label, color=color,
@@ -1021,7 +1061,8 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
     L = []  # linhas do relatorio
     digest = dict(date=today, lineup=[], bench=[], alerts=[], adds=[], trades=[], ir=[],
                   total=0.0, week="", adds_left=0, repl=0.0, empty_slots=0,
-                  ir_used=0, ir_free=IR_SLOTS)
+                  ir_used=0, ir_free=IR_SLOTS, tight=[], lineup_choice=False,
+                  sells=[], buys=[])
 
     week_start = today - timedelta(days=today.weekday())
     week_end = week_start + timedelta(days=6)
@@ -1092,6 +1133,15 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
         if positions is None or not positions:
             notes.append("Posicoes dos candidatos indisponiveis (PlayerIndex falhou): so UTIL foi considerado.")
     cands = [c for c in cands if c["status"] not in ("OUT", "IR")]
+    # jogador de time rival nao e free agent: so pode chegar por troca
+    if other_teams:
+        owned_pids = set()
+        for entry in other_teams:
+            for x in (entry[1] if len(entry) > 1 else []):
+                pid_, _ = idx.find(x["name"])
+                if pid_ is not None:
+                    owned_pids.add(pid_)
+        cands = [c for c in cands if c["pid"] not in owned_pids]
     for c in cands:
         pool[c["pid"]] = c
 
@@ -1142,19 +1192,55 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
         pi = active_ids.index(e["pid"]) if e["pid"] in active_ids else None
         if pi is not None and pi in starters:
             continue
-        if e.get("in_ir"):
-            why = "esta no IR (ative para escalar)"
-        elif e["status"] in ("IR", "OUT"):
-            why = "lesionado/IR"
+        if e["status"] in ("IR", "OUT"):
+            why = "fora por lesao" + (" (no IR)" if e.get("in_ir") else "")
         elif not ctx.game(e["team"], today):
-            why = "sem jogo hoje"
+            why = "sem jogo hoje" + (" (no IR)" if e.get("in_ir") else "")
         elif e["pid"] in done_today:
             why = "jogo de hoje ja terminou"
+        elif e.get("in_ir"):
+            why = "esta no IR: ative para escalar"
         else:
             why = f"banco (valor {e['dv'][today]:.1f} perde para os titulares)"
         digest["bench"].append(dict(name=e["name"], team=e["team"], why=why,
                                     status=e["status"]))
         L.append(f"- {e['name']} ({e['team']}): {why}")
+
+    # ========== 1b) QUEM ENTRA E QUEM SAI ==============================
+    # So faz sentido quando ha mais jogadores elegiveis do que slots escalaveis.
+    tight = []
+    if len(active_ids) > len(LINEUP_SLOTS):
+        for sj, pi in assign:
+            e = pool[active_ids[pi]]
+            slot = LINEUP_SLOTS[sj]
+            alts = [pool[active_ids[k]] for k in range(len(active_ids))
+                    if k not in starters and pool[active_ids[k]]["dv"][today] > 0
+                    and (slot == "UTIL" or pool[active_ids[k]]["elig"] & SLOT_ELIG[slot])]
+            if not alts:
+                continue
+            b = max(alts, key=lambda x: x["dv"][today])
+            tight.append(dict(slot=slot, starter=e["name"],
+                              starter_fp=e["dv"][today], challenger=b["name"],
+                              challenger_fp=b["dv"][today],
+                              margin=e["dv"][today] - b["dv"][today]))
+        tight.sort(key=lambda x: x["margin"])
+        digest["tight"] = tight[:3]
+        digest["lineup_choice"] = True
+        if tight:
+            L += ["", f"**Disputa por vaga** ({len(active_ids)} jogadores elegiveis para "
+                      f"{len(LINEUP_SLOTS)} slots):"]
+            for t in tight[:3]:
+                if t["margin"] <= 3:
+                    L.append(f"- Slot {t['slot']}: **{t['challenger']}** ({t['challenger_fp']:.1f} FP) "
+                             f"esta a {t['margin']:.1f} FP de tomar o lugar de "
+                             f"**{t['starter']}** ({t['starter_fp']:.1f} FP).")
+                else:
+                    L.append(f"- Slot {t['slot']}: **{t['starter']}** ({t['starter_fp']:.1f} FP) "
+                             f"seguro; {t['challenger']} precisaria de "
+                             f"+{t['margin']:.1f} FP.")
+    else:
+        digest["tight"] = []
+        digest["lineup_choice"] = False
     # backups para DTD
     for sj, pi in assign:
         e = pool[active_ids[pi]]
@@ -1182,6 +1268,9 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
         for r in pending:
             L.append(f"- **{r['name']}** ({r['team']}, {r['status']}): "
                      f"**{IR_ADVICE[r['advice']][0]}** - " + "; ".join(r["why"]))
+            for i, o in enumerate(r.get("options") or [], start=1):
+                L.append(f"  {i}. dropar **{o['name']}** ({o['team']}, {o['proj']:.0f} FP/jogo) "
+                         f"- {o['why']}")
             summary.append(f"IR: {IR_ADVICE[r['advice']][0]} {r['name']}")
     else:
         L.append("Nenhuma acao de IR pendente: elenco e IR coerentes com o status do ESPN.")
@@ -1241,9 +1330,46 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
                                      delta_form=e["delta_form"]))
         L.append(f"- **{e['name']}** - {lab}: " + "; ".join(e["why"]) + conf)
         if e["tag"] == "VENDER_NA_ALTA":
+            digest["sells"].append(dict(name=e["name"], team=e["team"], proj=e["proj_fppg"],
+                                        why=e["why"]))
             summary.append(f"VENDER NA ALTA: {e['name']} ({'; '.join(e['why'])})")
         if e["tag"] == "PAPEL_ENCOLHENDO":
+            digest["sells"].append(dict(name=e["name"], team=e["team"], proj=e["proj_fppg"],
+                                        why=e["why"]))
             summary.append(f"ALERTA papel: {e['name']} ({'; '.join(e['why'])})")
+    L.append("")
+
+    # ---- alvos de compra nos elencos rivais ---------------------------
+    if other_teams:
+        my_pids = {e["pid"] for e in roster}
+        seen_buy = {s["name"] for s in digest["sells"]}
+        for entry in other_teams:
+            tname, plist = entry[0], entry[1]
+            for x in plist:
+                pid, _ = idx.find(x["name"])
+                if pid is None or pid in my_pids:
+                    continue
+                prof = profiles.get(pid)
+                if not prof or prof["stale"] or prof["proj_fppg"] < repl:
+                    continue
+                tag, why = form_tag(prof, opts.recent)
+                if tag != "COMPRAR_NA_BAIXA":
+                    continue
+                if prof["name"] in seen_buy:
+                    continue
+                seen_buy.add(prof["name"])
+                digest["buys"].append(dict(
+                    name=prof["name"], team=prof["team"], owner=tname,
+                    proj=prof["proj_fppg"], recent=prof["fp5"], why=why,
+                    status=norm_status(x.get("status"))))
+        digest["buys"].sort(key=lambda b: -b["proj"])
+        digest["buys"] = digest["buys"][:6]
+        if digest["buys"]:
+            L.append("**Alvos de compra nos elencos rivais** (fase de baixa: o dono pode vender barato):")
+            for b in digest["buys"]:
+                L.append(f"- {b['name']} ({b['team']}, de {b['owner']}): proj {b['proj']:.1f}/jogo, "
+                         f"FP ult.{opts.recent} {b['recent']:.1f} - " + "; ".join(b["why"]))
+            L.append("")
     L.append("")
 
     # ficha avancada
@@ -1510,16 +1636,26 @@ def send_email(subject, text, html=None):
 
 
 # --------------------------------------------------------------------------
-# Email em HTML
+# Email em HTML (tema escuro)
 # --------------------------------------------------------------------------
-ORANGE = "#e8792b"
-INK = "#10141c"
-MUTED = "#6b7280"
+BG = "#0a0d13"        # fundo da pagina
+CARD = "#141a24"      # cartao principal
+SOFT = "#1b2230"      # blocos internos
+LINE = "#242e3d"      # bordas
+INK = "#eef2f8"       # texto principal
+MUTED = "#8b96a8"     # texto secundario
+ORANGE = "#f97316"    # destaque
+GREEN_BG, GREEN_FG = "#10281c", "#4ade80"
+RED_BG, RED_FG = "#2a1417", "#f87171"
+AMBER_BG, AMBER_FG = "#2b2210", "#fbbf24"
+BLUE_BG, BLUE_FG = "#12243a", "#60a5fa"
+GREY_BG, GREY_FG = "#232d3c", "#9aa5b6"
+
 TAG_STYLE = {
-    "VENDER_NA_ALTA": ("Vender na alta", "#fee4e2", "#b42318"),
-    "COMPRAR_NA_BAIXA": ("Comprar na baixa", "#dcfce7", "#166534"),
-    "PAPEL_ENCOLHENDO": ("Papel encolhendo", "#fef3c7", "#92400e"),
-    "ALTA_SUSTENTAVEL": ("Alta sustentável", "#dbeafe", "#1e40af"),
+    "VENDER_NA_ALTA": ("Vender na alta", RED_BG, RED_FG),
+    "COMPRAR_NA_BAIXA": ("Comprar na baixa", GREEN_BG, GREEN_FG),
+    "PAPEL_ENCOLHENDO": ("Papel encolhendo", AMBER_BG, AMBER_FG),
+    "ALTA_SUSTENTAVEL": ("Alta sustentável", BLUE_BG, BLUE_FG),
 }
 
 
@@ -1562,7 +1698,7 @@ def render_email_html(d):
     logo_html = ""
     if logo:
         logo_html = (f'<img src="{esc(logo)}" width="54" height="54" alt="" '
-                     f'style="display:block;border-radius:12px;border:0;background:#1c2230">')
+                     f'style="display:block;border-radius:12px;border:0;background:{SOFT}">')
 
     meta = f"{day:%d/%m/%Y} · Semana {esc(d.get('week',''))}"
     if owner:
@@ -1572,19 +1708,21 @@ def render_email_html(d):
 
     # ---------- cabecalho ----------
     rows.append(
-        f'<tr><td style="background:{INK};padding:26px 28px">'
+        f'<tr><td style="background:{SOFT};padding:26px 28px;'
+        f'border-bottom:1px solid {LINE}">'
         f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>'
         f'<td width="54" valign="middle">{logo_html}</td>'
         f'<td valign="middle" style="padding-left:14px">'
-        f'<div style="color:#8b93a7;font-size:11px;letter-spacing:2px;text-transform:uppercase">NBA Fantasy</div>'
-        f'<div style="color:#ffffff;font-size:21px;font-weight:700;margin-top:3px">{team}</div>'
-        f'<div style="color:#98a2b3;font-size:12px;margin-top:3px">{esc(meta)}</div>'
+        f'<div style="color:{ORANGE};font-size:10px;letter-spacing:2.4px;'
+        f'text-transform:uppercase;font-weight:700">NBA Fantasy</div>'
+        f'<div style="color:#ffffff;font-size:21px;font-weight:700;margin-top:4px">{team}</div>'
+        f'<div style="color:{MUTED};font-size:12px;margin-top:4px">{esc(meta)}</div>'
         f'</td></tr></table></td></tr>')
 
     # ---------- faixa de numeros ----------
     rows.append(
         f'<tr><td style="padding:6px 20px 0 20px"><table role="presentation" width="100%" '
-        f'cellpadding="0" cellspacing="0" border="0" style="border-bottom:1px solid #e5e7eb"><tr>'
+        f'cellpadding="0" cellspacing="0" border="0" style="border-bottom:1px solid {LINE}"><tr>'
         + _stat("FP projetado hoje", f"{d.get('total', 0):.0f}", ORANGE)
         + _stat("Adds restantes", f"{d.get('adds_left', 0)}/{d.get('adds_limit', 5)}")
         + _stat("Nivel de reposicao", f"{d.get('repl', 0):.0f}")
@@ -1601,11 +1739,11 @@ def render_email_html(d):
                 photo = (f'<img src="https://a.espncdn.com/i/headshots/nba/players/full/'
                          f'{int(p["pid"])}.png" width="40" height="40" alt="" '
                          f'style="display:block;border-radius:50%;border:2px solid #eef0f3">')
-            dtd = (f'<span style="color:#b45309;font-size:11px;font-weight:600"> · DTD</span>'
+            dtd = (f'<span style="color:{AMBER_FG};font-size:11px;font-weight:600"> · DTD</span>'
                    if p.get("status") == "DTD" else "")
             body.append(
                 f'<tr>'
-                f'<td width="52" style="padding:9px 0"><div style="background:{INK};color:#fff;'
+                f'<td width="52" style="padding:9px 0"><div style="background:{SOFT};color:{ORANGE};'
                 f'border-radius:8px;padding:5px 0;text-align:center;font-size:11px;font-weight:700;'
                 f'letter-spacing:.5px">{esc(p["slot"])}</div></td>'
                 f'<td width="46" style="padding:9px 0 9px 8px">{photo}</td>'
@@ -1617,13 +1755,13 @@ def render_email_html(d):
                 f'<div style="color:{ORANGE};font-size:17px;font-weight:700">{p["fp"]:.1f}</div>'
                 f'<div style="margin-top:3px">{_pill(p.get("tag"))}</div></td>'
                 f'</tr>'
-                f'<tr><td colspan="4" style="border-bottom:1px solid #f1f3f5;font-size:0;line-height:0">&nbsp;</td></tr>')
+                f'<tr><td colspan="4" style="border-bottom:1px solid {LINE};font-size:0;line-height:0">&nbsp;</td></tr>')
         rows.append(f'<tr><td style="padding:0 28px"><table role="presentation" width="100%" '
                     f'cellpadding="0" cellspacing="0" border="0">{"".join(body)}</table></td></tr>')
         if d.get("empty_slots"):
             rows.append(
-                f'<tr><td style="padding:10px 28px 0 28px"><div style="background:#fff7ed;'
-                f'border-left:3px solid {ORANGE};padding:9px 12px;border-radius:6px;color:#9a3412;'
+                f'<tr><td style="padding:10px 28px 0 28px"><div style="background:{AMBER_BG};'
+                f'border-left:3px solid {AMBER_FG};padding:9px 12px;border-radius:6px;color:{AMBER_FG};'
                 f'font-size:12px">{d["empty_slots"]} slot(s) sem jogador elegivel com jogo hoje.</div>'
                 f'</td></tr>')
     else:
@@ -1631,34 +1769,75 @@ def render_email_html(d):
         rows.append(f'<tr><td style="padding:0 28px"><div style="color:{MUTED};font-size:13px">'
                     f'Nenhum jogador com jogo hoje.</div></td></tr>')
 
+    # ---------- disputa por vaga ----------
+    tight = d.get("tight") or []
+    if d.get("lineup_choice") and tight:
+        cards = []
+        for t in tight[:3]:
+            risky = t["margin"] <= 3
+            bg, fg = (AMBER_BG, AMBER_FG) if risky else (BLUE_BG, BLUE_FG)
+            head = (f'<span style="color:{RED_FG};font-weight:700">{esc(t["challenger"])}</span> '
+                    f'<span style="color:{MUTED}">pode entrar no lugar de</span> '
+                    f'<span style="color:{INK};font-weight:700">{esc(t["starter"])}</span>'
+                    if risky else
+                    f'<span style="color:{GREEN_FG};font-weight:700">{esc(t["starter"])}</span> '
+                    f'<span style="color:{MUTED}">esta seguro no slot</span>')
+            cards.append(
+                f'<div style="border-left:3px solid {fg};background:{SOFT};padding:10px 14px;'
+                f'border-radius:6px;margin-bottom:8px">'
+                f'<div style="font-size:13px">{head} '
+                f'<span style="display:inline-block;margin-left:6px;padding:2px 8px;border-radius:999px;'
+                f'background:{bg};color:{fg};font-size:10px;font-weight:700;letter-spacing:.4px">'
+                f'{esc(t["slot"])}</span></div>'
+                f'<div style="color:{MUTED};font-size:11px;margin-top:4px">'
+                f'{t["starter_fp"]:.1f} vs {t["challenger_fp"]:.1f} FP · '
+                f'diferenca {t["margin"]:.1f}</div></div>')
+        rows.append(_section("Quem entra e quem sai",
+                             "Slots apertados: margem de 3 FP ou menos pede atencao"))
+        rows.append(f'<tr><td style="padding:0 28px">{"".join(cards)}</td></tr>')
+
     # ---------- banco ----------
     bench = d.get("bench") or []
     if bench:
         items = "".join(
-            f'<div style="padding:6px 0;font-size:13px;color:#374151">'
+            f'<div style="padding:6px 0;font-size:13px;color:{MUTED}">'
             f'<span style="font-weight:600;color:{INK}">{esc(b["name"])}</span>'
-            f'<span style="color:{MUTED}"> — {esc(b["why"])}</span></div>'
+            f' — {esc(b["why"])}</div>'
             for b in bench[:12])
         rows.append(_section("Fora do lineup"))
         rows.append(f'<tr><td style="padding:0 28px">{items}</td></tr>')
 
-    # ---------- alertas ----------
+    # ---------- sinais: vender e comprar ----------
     alerts = d.get("alerts") or []
-    if alerts:
+    sells = d.get("sells") or []
+    buys = d.get("buys") or []
+    if alerts or sells or buys:
         cards = []
         for a in alerts:
-            _, bg, fg = TAG_STYLE.get(a["tag"], ("", "#f3f4f6", MUTED))
+            _, bg, fg = TAG_STYLE.get(a["tag"], ("", GREY_BG, GREY_FG))
             why = " · ".join(esc(w) for w in a["why"][:3])
             cards.append(
-                f'<div style="border-left:3px solid {fg};background:#fafbfc;padding:11px 14px;'
+                f'<div style="border-left:3px solid {fg};background:{SOFT};padding:11px 14px;'
                 f'border-radius:6px;margin-bottom:8px">'
                 f'<div style="font-size:13px"><span style="font-weight:700;color:{INK}">'
                 f'{esc(a["name"])}</span> <span style="color:{MUTED}">{esc(a["team"])}</span> '
                 f'<span style="display:inline-block;padding:2px 8px;border-radius:999px;'
                 f'background:{bg};color:{fg};font-size:10px;font-weight:700;text-transform:uppercase;'
                 f'letter-spacing:.4px">{esc(a["label"])}</span></div>'
-                f'<div style="color:#4b5563;font-size:12px;margin-top:4px">{why}</div></div>')
-        rows.append(_section("Sinais da semana"))
+                f'<div style="color:{MUTED};font-size:12px;margin-top:4px">{why}</div></div>')
+        for b in buys:
+            cards.append(
+                f'<div style="border-left:3px solid {GREEN_FG};background:{SOFT};padding:11px 14px;'
+                f'border-radius:6px;margin-bottom:8px">'
+                f'<div style="font-size:13px"><span style="font-weight:700;color:{INK}">'
+                f'{esc(b["name"])}</span> <span style="color:{MUTED}">{esc(b["team"])}</span> '
+                f'<span style="display:inline-block;padding:2px 8px;border-radius:999px;'
+                f'background:{GREEN_BG};color:{GREEN_FG};font-size:10px;font-weight:700;'
+                f'text-transform:uppercase;letter-spacing:.4px">Alvo de compra</span></div>'
+                f'<div style="color:{MUTED};font-size:12px;margin-top:4px">'
+                f'dono: {esc(b["owner"])} · proj {b["proj"]:.1f}/jogo · '
+                f'FP ult. {b["recent"]:.1f}</div></div>')
+        rows.append(_section("Sinais da semana", "Quem vender na sua equipe e quem tentar comprar"))
         rows.append(f'<tr><td style="padding:0 28px">{"".join(cards)}</td></tr>')
 
     # ---------- IR e status ----------
@@ -1669,12 +1848,24 @@ def render_email_html(d):
                f"{d.get('ir_free', 0)} vaga(s) livre(s)")
         cards = []
         for r in actions:
-            label, bg, fg = IR_ADVICE.get(r["advice"], (r["advice"], "#f3f4f6", MUTED))
+            label, bg, fg = IR_ADVICE.get(r["advice"], (r["advice"], GREY_BG, GREY_FG))
             why = " · ".join(esc(w) for w in r["why"][:3])
             ret = (f'<span style="color:{MUTED}"> · retorno {r["expected_return"]:%d/%m}</span>'
                    if r.get("expected_return") else "")
+            opts = r.get("options") or []
+            opts_html = ""
+            if opts:
+                lis = "".join(
+                    f'<div style="color:{MUTED};font-size:11px;margin-top:3px">'
+                    f'<span style="color:{RED_FG};font-weight:700">{i}.</span> dropar '
+                    f'<span style="color:{INK};font-weight:600">{esc(o["name"])}</span> '
+                    f'({esc(o["team"])}, {o["proj"]:.0f}/j)</div>'
+                    for i, o in enumerate(opts, start=1))
+                opts_html = (f'<div style="color:{MUTED};font-size:10px;text-transform:uppercase;'
+                             f'letter-spacing:.5px;margin-top:7px">Opcoes para abrir vaga</div>'
+                             f'{lis}')
             cards.append(
-                f'<div style="border-left:3px solid {fg};background:#fafbfc;padding:11px 14px;'
+                f'<div style="border-left:3px solid {fg};background:{SOFT};padding:11px 14px;'
                 f'border-radius:6px;margin-bottom:8px">'
                 f'<div style="font-size:13px"><span style="font-weight:700;color:{INK}">'
                 f'{esc(r["name"])}</span> <span style="color:{MUTED}">{esc(r["team"])} · '
@@ -1682,7 +1873,8 @@ def render_email_html(d):
                 f'<span style="display:inline-block;margin-left:6px;padding:2px 8px;border-radius:999px;'
                 f'background:{bg};color:{fg};font-size:10px;font-weight:700;text-transform:uppercase;'
                 f'letter-spacing:.4px">{esc(label)}</span>{ret}</div>'
-                f'<div style="color:#4b5563;font-size:12px;margin-top:4px">{why}</div></div>')
+                f'<div style="color:{MUTED};font-size:12px;margin-top:4px">{why}</div>'
+                f'{opts_html}</div>')
         rows.append(_section("IR e status", sub))
         rows.append(f'<tr><td style="padding:0 28px">{"".join(cards)}</td></tr>')
 
@@ -1693,18 +1885,18 @@ def render_email_html(d):
         for a in adds:
             owned = f'{a["owned"]:.0f}% no ESPN' if a.get("owned") else ""
             body.append(
-                f'<tr><td style="padding:10px 0;border-bottom:1px solid #f1f3f5">'
+                f'<tr><td style="padding:10px 0;border-bottom:1px solid {LINE}">'
                 f'<div style="font-size:13px;color:{INK}">'
-                f'<span style="color:#166534;font-weight:700">+ {esc(a["add"])}</span>'
+                f'<span style="color:{GREEN_FG};font-weight:700">+ {esc(a["add"])}</span>'
                 f'<span style="color:{MUTED}"> ({esc(a["add_team"])}, {a["add_fp"]:.1f}/j)</span>'
                 f'</div>'
                 f'<div style="font-size:13px;color:{INK};margin-top:3px">'
-                f'<span style="color:#b42318;font-weight:700">− {esc(a["drop"])}</span>'
+                f'<span style="color:{RED_FG};font-weight:700">− {esc(a["drop"])}</span>'
                 f'<span style="color:{MUTED}"> ({esc(a["drop_team"])}, {a["drop_fp"]:.1f}/j)</span>'
                 f'</div>'
                 f'<div style="color:{MUTED};font-size:11px;margin-top:4px">'
                 f'{a["games"]} jogos ate o fim · ganho na semana '
-                f'<span style="color:#166534;font-weight:700">{a["wg"]:+.0f} FP</span> '
+                f'<span style="color:{GREEN_FG};font-weight:700">{a["wg"]:+.0f} FP</span> '
                 f'({a["pg"]:+.1f}/jogo){(" · " + owned) if owned else ""}</div>'
                 f'</td></tr>')
         rows.append(_section("Contratar / dropar", f"{d.get('adds_left', 0)} add(s) restante(s) neste matchup"))
@@ -1717,24 +1909,24 @@ def render_email_html(d):
         body = []
         for t in trades:
             reject = t.get("reject", 50)
-            bg = t.get("reject_bg") or "#f3f4f6"
-            fg = t.get("reject_fg") or MUTED
+            bg = t.get("reject_bg") or GREY_BG
+            fg = t.get("reject_fg") or GREY_FG
             veto = t.get("veto", "baixo")
-            veto_html = (f'<span style="color:#b45309;font-size:11px;margin-left:6px">'
+            veto_html = (f'<span style="color:{AMBER_FG};font-size:11px;margin-left:6px">'
                          f'veto {esc(veto)}</span>' if veto != "baixo" else "")
-            factors = "".join(f'<div style="color:#6b7280;font-size:11px;margin-top:2px">· {esc(f)}</div>'
+            factors = "".join(f'<div style="color:{MUTED};font-size:11px;margin-top:2px">· {esc(f)}</div>'
                               for f in (t.get("factors") or [])[:3])
             body.append(
-                f'<tr><td style="padding:10px 0;border-bottom:1px solid #f1f3f5">'
+                f'<tr><td style="padding:10px 0;border-bottom:1px solid {LINE}">'
                 f'<div style="color:{MUTED};font-size:11px;text-transform:uppercase;'
                 f'letter-spacing:.5px">{esc(t["team"])}</div>'
                 f'<div style="font-size:13px;margin-top:3px">'
-                f'<span style="color:#b42318">dar {esc(t["give"])}</span>'
+                f'<span style="color:{RED_FG}">dar {esc(t["give"])}</span>'
                 f'<span style="color:{MUTED}"> → </span>'
-                f'<span style="color:#166534;font-weight:600">receber {esc(t["get"])}</span></div>'
+                f'<span style="color:{GREEN_FG};font-weight:600">receber {esc(t["get"])}</span></div>'
                 f'<div style="color:{MUTED};font-size:11px;margin-top:3px">'
                 f'{t["give_fp"]:.1f} → {t["get_fp"]:.1f} FP/jogo · '
-                f'<span style="color:#166534;font-weight:700">{t["gain"]:+.1f}/jogo</span></div>'
+                f'<span style="color:{GREEN_FG};font-weight:700">{t["gain"]:+.1f}/jogo</span></div>'
                 f'<div style="margin-top:7px">'
                 f'<span style="display:inline-block;padding:3px 9px;border-radius:999px;'
                 f'background:{bg};color:{fg};font-size:10px;font-weight:700;'
@@ -1749,22 +1941,24 @@ def render_email_html(d):
 
     # ---------- rodape ----------
     rows.append(
-        f'<tr><td style="padding:22px 28px 26px 28px;border-top:1px solid #e5e7eb">'
-        f'<div style="color:#9ca3af;font-size:11px;line-height:1.6">'
+        f'<tr><td style="padding:22px 28px 26px 28px;border-top:1px solid {LINE}">'
+        f'<div style="color:{GREY_FG};font-size:11px;line-height:1.6">'
         f'Projecao estatistica, nao garantia. Confira lesoes e noticias antes de agir.<br>'
         f'Prazo de trocas em {d.get("trade_days", 0)} dias · gerado pelo NBA Fantasy Agent'
         f'</div></td></tr>')
 
     return (
         '<!DOCTYPE html><html><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width,initial-scale=1"></head>'
-        f'<body style="margin:0;padding:24px 12px;background:#eef1f5;'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<meta name="color-scheme" content="dark only">'
+        '<meta name="supported-color-schemes" content="dark"></head>'
+        f'<body style="margin:0;padding:24px 12px;background:{BG};'
         f'font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,Helvetica,Arial,sans-serif">'
         f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">'
         f'<tr><td align="center">'
         f'<table role="presentation" width="640" cellpadding="0" cellspacing="0" border="0" '
-        f'style="width:640px;max-width:100%;background:#ffffff;border-radius:14px;'
-        f'box-shadow:0 1px 3px rgba(16,20,28,.10);overflow:hidden">'
+        f'style="width:640px;max-width:100%;background:{CARD};border-radius:14px;'
+        f'border:1px solid {LINE};overflow:hidden">'
         + "".join(rows) +
         '</table></td></tr></table></body></html>'
     )

@@ -189,20 +189,24 @@ valor = projeção × fator_ambiente × prob_disponibilidade × (0,96 se back-to
 
 Problema de atribuição jogador × slot que maximiza a soma dos valores. Elegibilidade: G = PG/SG, F = SF/PF, UTIL = qualquer um. Jogadores com valor 0 ficam no banco. Quem está no IR (slot do ESPN) ou com designação de IR fica fora do lineup.
 
+**Disputa por vaga:** quando o elenco ativo tem mais jogadores do que os 10 slots, o relatório mostra os 3 slots mais apertados. Para cada titular, o melhor concorrente no banco e a margem em FP. Margem ≤ 3 FP vira alerta ("pode entrar no lugar de"); acima disso, o titular é marcado como seguro.
+
 ### 5.5 IR e status
 
 A liga tem 3 vagas de IR. A seção avalia cada jogador contra elas usando `injuryStatus`, o slot atual (`lineupSlot`) e a data prevista de retorno (`expectedReturnDate`) que o ESPN fornece:
 
 | Ação | Quando |
 |---|---|
+| **Ativar do IR** | está no IR e já pode jogar (a vaga está desperdiçada) |
 | **Mover para IR** | status OUT, há vaga livre e o retorno não é iminente |
-| **Ativar do IR** | está no IR mas o ESPN não marca lesão (vaga desperdiçada) |
 | **Manter no IR** | OUT e o IR é o lugar certo |
 | **Manter** | day-to-day (não vale gastar vaga) ou OUT com retorno em até 3 dias |
 | **Dropar** | OUT, IR lotado e projeção abaixo do nível de reposição |
 | **IR lotado** | OUT mas as 3 vagas estão ocupadas: é preciso liberar uma |
 
-Jogador marcado para IR sai da lista de drops (não precisa ser cortado) e não entra no lineup até ser ativado.
+Ao recomendar **ativar**, a análise sempre traz **3 opções de drop** para abrir vaga, ordenadas pelo menor valor efetivo (projeção × chance de jogar) — quem já está fora por lesão aparece primeiro. Nunca é apresentada uma opção única, porque ativar exige escolher quem sai.
+
+Jogador marcado para IR sai da lista de drops (não precisa ser cortado) e não entra no lineup até ser ativado. Jogador de time rival nunca entra na lista de free agents.
 
 ### 5.6 Add/drop
 
@@ -229,7 +233,14 @@ Cada sugestão recebe um **risco de recusa** (0–100%), calculado assim:
 
 Rótulos: **baixo** (recusa ≤ 35%), **médio** (36–60%) e **alto** (> 60%). O risco também entra na ordenação, então trocas improváveis caem para o fim. O **risco de veto** é separado: alto quando o ganho passa de 8 FP/jogo, médio acima de 5.
 
-### 5.8 Cache
+### 5.8 Sinais da semana (comprar e vender)
+
+A seção reúne os dois lados da operação, não só o que fazer com o próprio elenco:
+
+- **Vender** (`VENDER_NA_ALTA`, `PAPEL_ENCOLHENDO`): jogadores do seu time em fase acima do sustentável ou perdendo minutos.
+- **Comprar** (`COMPRAR_NA_BAIXA`): jogadores de **elencos rivais** em fase de baixa, com projeção acima do nível de reposição. A lista mostra o nome do dono atual, porque a aquisição é por troca, não por waiver.
+
+### 5.9 Cache
 
 Game log da temporada atual: 3 h. Temporada anterior: 7 dias. Calendário: 12 h. Estatísticas dos times: 6 h. Posições: 72 h. `--refresh` ignora.
 
