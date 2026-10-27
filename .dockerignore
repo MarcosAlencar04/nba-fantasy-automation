@@ -1,0 +1,14 @@
+.git
+.gitignore
+.github
+.vscode
+.wrangler
+node_modules
+reports
+.cache
+__pycache__
+**/__pycache__
+docs
+*.md
+.env
+.env.*

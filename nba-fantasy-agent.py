@@ -248,24 +248,44 @@ def fetch_positions(season):
     return {int(a): b for a, b in zip(df["PERSON_ID"], df["POSITION"]) if isinstance(b, str)}
 
 
-def fetch_schedule():
-    """Retorna {date: [(home, away), ...]} so de jogos de temporada regular."""
-    games = defaultdict(list)
-    try:
+def fetch_schedule(season=None):
+    """Retorna {date: [(home, away), ...]} so de jogos de temporada regular.
+
+    Tenta cdn.nba.com e, se falhar, o nba_api. Devolve {} (com aviso) se ambos falharem.
+    """
+
+    def via_cdn(games):
         r = requests.get("https://cdn.nba.com/static/json/staticData/scheduleLeagueV2.json",
                          headers=UA, timeout=30)
         r.raise_for_status()
-        data = r.json()["leagueSchedule"]
-    except Exception:
-        from nba_api.stats.endpoints import scheduleleaguev2  # fallback
-        data = scheduleleaguev2.ScheduleLeagueV2(timeout=60).get_dict()["leagueSchedule"]
-    for gd in data["gameDates"]:
-        d = datetime.strptime(gd["gameDate"].split(" ")[0], "%m/%d/%Y").date()
-        for g in gd["games"]:
-            if not str(g.get("gameId", "")).startswith("002"):
-                continue
-            games[d].append((g["homeTeam"]["teamTricode"], g["awayTeam"]["teamTricode"]))
-    return dict(games)
+        for gd in r.json()["leagueSchedule"]["gameDates"]:
+            d = datetime.strptime(gd["gameDate"].split(" ")[0], "%m/%d/%Y").date()
+            for g in gd["games"]:
+                if str(g.get("gameId", "")).startswith("002"):
+                    games[d].append((g["homeTeam"]["teamTricode"], g["awayTeam"]["teamTricode"]))
+
+    def via_nba(games):
+        from nba_api.stats.endpoints import scheduleleaguev2
+        data = scheduleleaguev2.ScheduleLeagueV2(timeout=90).get_dict()["leagueSchedule"]
+        for gd in data["gameDates"]:
+            d = datetime.strptime(gd["gameDate"].split(" ")[0], "%m/%d/%Y").date()
+            for g in gd["games"]:
+                if str(g.get("gameId", "")).startswith("002"):
+                    games[d].append((g["homeTeam"]["teamTricode"], g["awayTeam"]["teamTricode"]))
+
+    for source in (via_cdn, via_nba):
+        games = defaultdict(list)
+        try:
+            source(games)
+        except Exception as ex:
+            print(f"Aviso: calendario via {source.__name__} falhou ({ex}).", file=sys.stderr)
+            continue
+        if games:
+            return dict(games)
+
+    print("Aviso: nenhuma fonte de calendario respondeu; o relatorio sai sem jogos do dia.",
+          file=sys.stderr)
+    return {}
 
 
 # --------------------------------------------------------------------------
@@ -1052,7 +1072,7 @@ def main():
     print(f"Coletando dados da NBA ({season})...", file=sys.stderr)
     cur = prep_logs(cached(f"log_{season}", 3, lambda: fetch_gamelog(season), opts.refresh))
     prev = prep_logs(cached(f"log_{prev_season}", 168, lambda: fetch_gamelog(prev_season), opts.refresh))
-    sched = cached(f"sched_{season}", 12, fetch_schedule, opts.refresh)
+    sched = cached(f"sched_{season}", 12, lambda: fetch_schedule(season), opts.refresh)
     try:
         tstats = cached(f"team_{season}", 6, lambda: fetch_team_stats(season), opts.refresh)
     except Exception as ex:

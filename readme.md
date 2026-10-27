@@ -81,3 +81,84 @@ Linux/Mac, todo dia as 10h (cron):
 Windows: use o Agendador de Tarefas.
 
 Rode na sua maquina: o stats.nba.com costuma bloquear IPs de servidores (GitHub Actions, por exemplo).
+
+## 7. Cloudflare (Container + Worker)
+
+Roda na nuvem sem depender da sua maquina. Precisa do plano **Workers Paid** (US$ 5/mes).
+O Worker cuida do agendamento; o agente roda dentro de um Container Python.
+
+Como funciona:
+
+- `crons = ["0 13 * * *"]` no `wrangler.toml`: 10h em Brasilia = 13h UTC. Cron do Workers e sempre UTC.
+- Depois da execucao da manha, o Durable Object consulta o calendario (ESPN) e agenda um alarme para
+  **30 minutos antes do primeiro jogo do dia**. Se nao houver jogo, nenhum alarme e criado.
+- O Container sobe, roda `nba-fantasy-agent.py --espn --notify` e devolve o relatorio em JSON.
+
+Arquivos:
+
+| Arquivo | Papel |
+|---|---|
+| `Dockerfile` | Imagem Python com `requirements.txt`, o agente e o `container/server.py`. |
+| `container/server.py` | Servidor HTTP minimo com `/health` e `/run`. |
+| `src/index.ts` | Worker (cron + trigger manual) e Durable Object (alarme, ciclo de vida do Container). |
+| `wrangler.toml` | Configuracao de cron, container e binding. |
+
+### Subir
+
+```bash
+npm install
+npx wrangler login
+```
+
+Segredos (os mesmos nomes do `.env`):
+
+```bash
+npx wrangler secret put ESPN_LEAGUE_ID
+npx wrangler secret put ESPN_SWID
+npx wrangler secret put ESPN_S2
+npx wrangler secret put TELEGRAM_TOKEN
+npx wrangler secret put TELEGRAM_CHAT_ID
+npx wrangler secret put SMTP_HOST
+npx wrangler secret put SMTP_PORT
+npx wrangler secret put SMTP_USER
+npx wrangler secret put SMTP_PASS
+npx wrangler secret put EMAIL_FROM
+npx wrangler secret put EMAIL_TO
+npx wrangler secret put RUN_TOKEN      # protege o disparo manual
+```
+
+O roster pode vir do `roster.csv` da imagem (exige redeploy a cada mudanca) ou da variavel
+`ROSTER_CSV`, que sobrevive sem rebuild:
+
+```toml
+[vars]
+ROSTER_CSV = """
+Nikola Jokic, C
+LeBron James, SF/PF
+Ayo Dosunmu, SG/PG, DTD
+"""
+```
+
+Deploy e disparo manual:
+
+```bash
+npx wrangler deploy
+curl -X POST "https://nba-fantasy.SEU-SUBDOMINIO.workers.dev/run?token=SEU_RUN_TOKEN&notify=0"
+```
+
+Logs:
+
+```bash
+npx wrangler tail
+```
+
+### Antes de confiar, valide
+
+1. **`stats.nba.com` a partir do Cloudflare.** Ele bloqueia varios IPs de datacenter. Se o relatorio
+   sair vazio, use o deploy local (secao 6).
+2. **SMTP a partir do Container.** Se o envio falhar, troque o email por uma API HTTP (Resend,
+   SendGrid) dentro de `send_email`.
+3. **Tempo de execucao.** Sem cache local, cada execucao baixa tudo de novo (30-90 s).
+
+Alternativa mais barata e sem esses riscos: manter o Python na sua maquina (secao 6) e usar o
+Worker so para agendar/disparar.
