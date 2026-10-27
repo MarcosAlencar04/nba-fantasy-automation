@@ -92,7 +92,7 @@ NBA_POS_MAP = {
 # Utilidades
 # --------------------------------------------------------------------------
 def cached(key, ttl_h, fn, refresh=False):
-    CACHE_DIR.mkdir(exist_ok=True)
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
     f = CACHE_DIR / f"{key}.pkl"
     if f.exists() and not refresh and (time.time() - f.stat().st_mtime) < ttl_h * 3600:
         try:
@@ -2847,11 +2847,19 @@ def main():
     digest.update(team_name=data.get("my_team"), team_logo=data.get("my_logo"),
                   owner=data.get("my_owner"), photos=(source == "espn"))
     print(report)
-    out = Path(opts.out_dir)
-    out.mkdir(exist_ok=True)
-    f = out / f"relatorio_{today.isoformat()}.md"
-    f.write_text(report, encoding="utf-8")
-    print(f"\n[salvo em {f}]", file=sys.stderr)
+    # Salvar o relatorio e secundario: se o disco falhar, a notificacao ainda
+    # precisa sair. Por isso o bloco inteiro fica isolado.
+    try:
+        out = Path(opts.out_dir)
+        # parents=True porque a nuvem usa reports/time-N, e mkdir simples falha
+        # quando a pasta pai ainda nao existe.
+        out.mkdir(parents=True, exist_ok=True)
+        f = out / f"relatorio_{today.isoformat()}.md"
+        f.write_text(report, encoding="utf-8")
+        print(f"\n[salvo em {f}]", file=sys.stderr)
+    except OSError as ex:
+        print(f"Aviso: nao consegui salvar o relatorio em '{opts.out_dir}' ({ex}). "
+              "Seguindo para a notificacao.", file=sys.stderr)
     want_telegram = opts.telegram or opts.notify
     want_email = opts.email or opts.notify
 

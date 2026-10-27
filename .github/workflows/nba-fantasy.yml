@@ -54,6 +54,9 @@ jobs:
   # Este job conta as entradas e monta o matrix so com os indices, entao nenhum
   # e-mail ou chat id aparece na lista de jobs do Actions.
   times:
+    needs: gate
+    # Sem isso este job subiria nas 48 execucoes do dia so para montar o matrix.
+    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
