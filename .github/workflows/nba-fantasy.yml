@@ -59,7 +59,7 @@ jobs:
 
       - name: Rodar o agente
         if: steps.gate.outputs.run == 'true'
-        run: python nba-fantasy-agent.py --espn --notify
+        run: python nba-fantasy-agent.py --notify
 
       - name: Guardar o relatorio
         if: steps.gate.outputs.run == 'true'

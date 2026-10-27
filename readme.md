@@ -11,59 +11,51 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## 2. Elenco (vem do ESPN)
+## 2. Elenco (100% da API do ESPN)
 
-Com `ESPN_TEAM_ID` no `.env`, o agente le o seu elenco direto da API do ESPN -
-nao precisa manter nenhum arquivo. O CSV continua disponivel como override manual:
+Nao existe mais arquivo de roster: o agente le o seu elenco direto da API do ESPN.
+Basta ter `ESPN_LEAGUE_ID` e `ESPN_TEAM_ID` no `.env` (veja a secao 4).
 
-```
-Lebron James, SF/PF
-Nikola Jokic, C
-Ayo Dosunmu, SG/PG, DTD
-```
+Onde achar o `ESPN_TEAM_ID`: na URL do seu time (`...&teamId=3`). Se voce errar o numero,
+o agente lista os IDs validos da liga.
 
-A 3a coluna (status) e opcional: `OUT`, `DTD` ou `IR`. Se `roster.csv` existir, ele tem
-prioridade sobre o elenco do ESPN (util para corrigir uma lesao que o ESPN ainda nao marcou).
-
-Onde achar o `ESPN_TEAM_ID`: na URL do seu time (`...&teamId=3`), ou na lista de times da liga
-(o agente imprime os IDs quando nao encontra o seu).
+Posicoes e status de lesao (`OUT`/`DTD`) tambem vem do ESPN (`injuryStatus`).
 
 ## 3. Rodar
 
 ```bash
-python nba-fantasy-agent.py --espn
+python nba-fantasy-agent.py --notify
 ```
 
 Opcoes uteis:
 
 ```bash
-python nba-fantasy-agent.py --espn --adds-used 2
-python nba-fantasy-agent.py --espn --candidates candidates.csv
-python nba-fantasy-agent.py --espn --refresh
-python nba-fantasy-agent.py --espn --source espn   # forca a fonte ESPN
+python nba-fantasy-agent.py --notify --adds-used 2
+python nba-fantasy-agent.py                  # sem notificar, so imprime
+python nba-fantasy-agent.py --refresh        # ignora o cache
+python nba-fantasy-agent.py --source espn    # forca a fonte ESPN
 ```
 
 - `--adds-used N`: quantos dos 5 adds do matchup voce ja gastou.
-- `--candidates arquivo.csv`: free agents especificos para avaliar (um nome por linha).
 - `--refresh`: ignora o cache e baixa os dados de novo.
 - `--source`: `auto` (detecta), `nba` ou `espn`.
 
 O relatorio e salvo em `reports/relatorio_AAAA-MM-DD.md`.
 
-## 4. Modo ESPN (elenco, free agents, lesoes e trocas)
+## 4. Credenciais do ESPN (obrigatorio)
 
 1. Copie `.env.example` para `.env`.
 2. `ESPN_LEAGUE_ID`: o numero `leagueId=...` na URL da sua liga.
-3. `ESPN_TEAM_ID`: o numero `teamId=...` na URL do seu time (dispensa o `roster.csv`).
+3. `ESPN_TEAM_ID`: o numero `teamId=...` na URL do seu time.
 4. `ESPN_SWID` e `ESPN_S2`: no navegador logado no espn.com, aperte F12, va em Application (Chrome) ou Storage (Firefox), depois Cookies, e copie os valores.
 5. Rode:
 
 ```bash
-python nba-fantasy-agent.py --espn
+python nba-fantasy-agent.py --notify
 ```
 
-Na primeira execucao ele imprime `Seu time: <nome> (id N, 14 jogadores)`. Se aparecer o aviso
-de time nao identificado, confira o `ESPN_TEAM_ID`.
+Na primeira execucao ele imprime `Seu time: <nome> (id N, 14 jogadores)`. Se o time nao for
+identificado, confira o `ESPN_TEAM_ID` (o agente lista os IDs validos).
 
 Os cookies expiram de tempos em tempos. Se der erro de autenticacao, copie de novo.
 
@@ -72,9 +64,9 @@ Os cookies expiram de tempos em tempos. Se der erro de autenticacao, copie de no
 Preencha as variaveis no `.env` e escolha o canal na execucao:
 
 ```bash
-python nba_fantasy_agent.py --espn --telegram   # so Telegram
-python nba_fantasy_agent.py --espn --email      # so email
-python nba_fantasy_agent.py --espn --notify     # os dois
+python nba-fantasy-agent.py --telegram   # so Telegram
+python nba-fantasy-agent.py --email      # so email
+python nba-fantasy-agent.py --notify     # os dois
 ```
 
 Telegram: `TELEGRAM_TOKEN` e `TELEGRAM_CHAT_ID` (crie o bot com o `@BotFather`).
@@ -132,7 +124,7 @@ O `stats.nba.com` bloqueia IPs de datacenter, entao o agente detecta o ambiente
 
 - Rebotes ofensivos sao estimados em 24% do total (o gamelog do ESPN nao separa OREB/DREB);
 - Ritmo/defesa dos times (fator de ambiente) fica desligado;
-- O universo analisado e o da sua liga + free agents (precisa de `--espn`).
+- O universo analisado e o da sua liga + free agents.
 
 Para forcar uma fonte: `--source nba` ou `--source espn`.
 

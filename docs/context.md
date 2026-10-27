@@ -84,9 +84,9 @@ Consequência: eficiência importa muito nesta liga. Um jogador que só chuta mu
 ## 3. Decisões tomadas
 
 - **Plataforma:** ESPN. Não há API oficial de escrita, então o agente só lê e recomenda.
-- **Roster:** vem da **API do ESPN** (`ESPN_TEAM_ID`), sem precisar de arquivo. `roster.csv` segue como override opcional no formato `Nome, Posição[, Status]`, com status (`OUT`, `DTD`, `IR`), e tem prioridade sobre o status do ESPN.
+- **Roster:** vem da **API do ESPN** (`ESPN_TEAM_ID`). Não existe mais arquivo de elenco.
 - **Dados da NBA:** biblioteca `nba_api` (game logs, estatísticas avançadas dos times, posições) mais o calendário oficial em `cdn.nba.com`.
-- **Free agents:** só dá para identificá-los com credenciais do ESPN (`--espn`). Sem isso, o agente avalia a NBA inteira e pede para o usuário conferir a disponibilidade. Há também a opção `--candidates` com uma lista manual.
+- **Free agents:** vêm do ESPN (`free_agents`), junto com o elenco dos outros times e o status de lesão.
 - **Execução automática:** descartada por ora (frágil e pode violar os termos do ESPN). O fluxo é semi-automático: o agente recomenda, o usuário aplica.
 - **Hospedagem:** roda no **GitHub Actions** (grátis, 2 execuções/dia). Cloudflare foi descartado: no plano Free o limite é 10 ms de CPU por invocação, 50 subrequests por chamada, e Python Workers é Pyodide (sem `scipy`, sem sockets para `nba_api`/`espn_api`); Containers exige plano pago.
 - **Idioma:** relatório e comentários em português.
@@ -98,9 +98,9 @@ Consequência: eficiência importa muito nesta liga. Um jogador que só chuta mu
 
 Fluxo de `main()`:
 
-1. Lê `roster.csv` e os argumentos de linha de comando.
+1. Lê os argumentos de linha de comando e as credenciais do ESPN.
 2. Baixa (com cache em `.cache/`) os game logs da temporada atual e da anterior, o calendário, as estatísticas de ritmo/defesa dos times e as posições.
-3. Se `--espn`: lê free agents, status de lesão e elencos dos outros times.
+3. Lê o ESPN: elenco do usuário (`ESPN_TEAM_ID`), free agents, status de lesão e elencos dos outros times.
 4. Chama `run_analysis(...)`, uma função pura que recebe os dados e devolve o relatório em Markdown. Foi isolada para permitir testes com dados sintéticos.
 5. Imprime, salva em `reports/relatorio_AAAA-MM-DD.md` e, com `--telegram`, envia um resumo.
 
@@ -128,7 +128,7 @@ Funções principais:
 | `.github/workflows/nba-fantasy.yml` | Agendamento na nuvem (cron da manhã + a cada 30 min). |
 | `scheduler.py` | Agendador alternativo para rodar localmente (loop contínuo). |
 | `systemd/nba-fantasy.service` | Unit do systemd para o agendador local. |
-| `roster.csv` | Elenco do usuário (hoje só tem 3 jogadores de exemplo). |
+| `roster.csv` | Removido: o elenco vem da API do ESPN. |
 | `candidates.example.csv` | Modelo de lista de candidatos. |
 | `env.example.txt` | Modelo de configuração; copiar para `.env`. |
 | `requirements.txt` | Dependências. |
@@ -138,7 +138,7 @@ Funções principais:
 
 ### Argumentos de linha de comando
 
-`--roster`, `--candidates`, `--espn`, `--source {auto,nba,espn}`, `--adds-used N`, `--recent N` (janela recente, padrão 5 jogos), `--replacement X` (nível de reposição, padrão 24), `--date AAAA-MM-DD`, `--telegram`, `--email`, `--notify`, `--refresh`, `--out-dir`.
+`--team-id`, `--source {auto,nba,espn}`, `--adds-used N`, `--recent N` (janela recente, padrão 5 jogos), `--replacement X` (nível de reposição, padrão 24), `--date AAAA-MM-DD`, `--telegram`, `--email`, `--notify`, `--refresh`, `--out-dir`.
 
 ### Fonte de dados (`--source`)
 
@@ -197,9 +197,9 @@ Problema de atribuição jogador × slot que maximiza a soma dos valores. Elegib
 - Se faltarem 2 dias ou menos na semana, o horizonte se estende até a semana seguinte.
 - **Nível de reposição:** 5º melhor free agent do ESPN, ou 24 FP/jogo se não houver lista (ajustável com `--replacement`).
 
-### 5.6 Trocas (só com `--espn`)
+### 5.6 Trocas (com os elencos vindos do ESPN)
 
-Troca 1x1 em que o usuário ganha pelo menos 2,5 FP/jogo de projeção real e o outro dono "percebe" valor igual ou maior. O valor percebido é `0,5 × média da temporada + 0,5 × média dos últimos 10 jogos`, aproximando o que o ESPN mostra. No máximo 2 sugestões por time e 8 no total; avisa risco de veto quando o ganho passa de 8 FP/jogo. Sem `--espn`, mostra apenas quem vender e alvos de "comprar na baixa" na NBA inteira.
+Troca 1x1 em que o usuário ganha pelo menos 2,5 FP/jogo de projeção real e o outro dono "percebe" valor igual ou maior. O valor percebido é `0,5 × média da temporada + 0,5 × média dos últimos 10 jogos`, aproximando o que o ESPN mostra. No máximo 2 sugestões por time e 8 no total; avisa risco de veto quando o ganho passa de 8 FP/jogo.
 
 ### 5.7 Cache
 
@@ -269,11 +269,11 @@ EMAIL_TO=
 ```
 
 - `ESPN_LEAGUE_ID`: o `leagueId=` na URL da liga.
-- `ESPN_TEAM_ID`: o `teamId=` na URL do seu time. Com ele, o elenco é lido da API (dispensa `roster.csv`).
+- `ESPN_TEAM_ID`: o `teamId=` na URL do seu time. O elenco é lido da API por ele.
 - `ESPN_SWID` e `ESPN_S2`: cookies do navegador logado em espn.com (F12, Application ou Storage, Cookies). Expiram de tempos em tempos.
 - **Email:** `SMTP_HOST`/`SMTP_PORT` (587 com STARTTLS ou 465 com SSL), `SMTP_USER`, `SMTP_PASS` (no Gmail, app password), `EMAIL_FROM` (opcional, padrão `SMTP_USER`) e `EMAIL_TO` (vários destinatários separados por vírgula). Enviado por `smtplib` da stdlib, sem dependência nova.
 - A temporada 2026-27 corresponde a `year=2027` no `espn-api` (o código calcula sozinho).
-- O time do usuário é identificado por `ESPN_TEAM_ID` (ou, sem ele, pela maior sobreposição de nomes com o `roster.csv`, mínimo de 3 jogadores).
+- O time do usuário é identificado por `ESPN_TEAM_ID`.
 
 ---
 
@@ -286,8 +286,8 @@ EMAIL_TO=
 
 ## 10. Próximos passos sugeridos
 
-1. Preencher o `roster.csv` com os 14 jogadores (posições como aparecem no ESPN) e rodar de verdade; trazer qualquer erro para correção.
-2. Configurar o modo `--espn` e validar a leitura de free agents e outros times.
+1. Rodar de verdade com as credenciais do ESPN e trazer qualquer erro para correção.
+2. Validar a leitura de elenco, free agents e outros times.
 3. Rodar durante 1 a 2 semanas só como consulta, comparando as sugestões com o que acontece, antes de confiar nelas.
 4. Possíveis evoluções:
    - Trocas 2x1 (consolidação) e consideração de necessidade posicional do outro time.

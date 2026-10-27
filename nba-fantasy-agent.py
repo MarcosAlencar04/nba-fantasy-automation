@@ -18,10 +18,11 @@ O que o agente faz:
      sorte de arremesso, minutos inflados, uso (usage), amostra.
   4. Melhores add/drop (free agents) avaliados pelo valor SEMANAL do lineup
      (respeitando posicoes e jogos de cada dia), nao so pela media.
-  5. Ideias de troca (precisa do modo --espn para ver os outros elencos).
+  5. Ideias de troca (com os elencos dos outros times vindos do ESPN).
 
-Uso:  python nba_fantasy_agent.py            (so com roster.csv)
-      python nba_fantasy_agent.py --espn     (le free agents/outros times)
+Requer ESPN_LEAGUE_ID e ESPN_TEAM_ID no .env: o elenco vem da API do ESPN.
+
+Uso:  python nba-fantasy-agent.py --notify
 """
 from __future__ import annotations
 
@@ -544,22 +545,6 @@ class NameIndex:
         return None, None
 
 
-def read_roster_csv(path):
-    rows = []
-    with open(path, encoding="utf-8-sig") as fh:
-        for ln in fh:
-            ln = ln.strip()
-            if not ln or ln.startswith("#"):
-                continue
-            parts = [x.strip() for x in re.split(r"[,;\t]", ln)]
-            if len(parts) < 2:
-                parts.append("")
-            if parts[0].lower() in ("nome", "name", "jogador", "player", "nome jogador"):
-                continue
-            rows.append(dict(name=parts[0], pos=parts[1], status=parts[2] if len(parts) > 2 else ""))
-    return rows
-
-
 def read_names_csv(path):
     names = []
     with open(path, encoding="utf-8-sig") as fh:
@@ -573,7 +558,7 @@ def read_names_csv(path):
 
 
 # --------------------------------------------------------------------------
-# ESPN (opcional): free agents, status de lesao e elencos dos outros times
+# ESPN: elenco, free agents, status de lesao e elencos dos outros times
 # --------------------------------------------------------------------------
 def elig_from_espn(p):
     slots = set(getattr(p, "eligibleSlots", []) or [])
@@ -629,7 +614,7 @@ def fetch_espn(year, roster_names=None, fa_size=150, team_id=None):
 
 
 def roster_rows_from_espn(players):
-    """Converte o elenco do ESPN no formato do roster.csv."""
+    """Converte o elenco do ESPN no formato usado pela analise."""
     rows = []
     for p in players:
         status = norm_status(p.get("status"))
@@ -723,7 +708,7 @@ def espn_gamelog(pid, season, name="", team=""):
 
 
 def espn_search_id(name):
-    """Resolve o ID do ESPN a partir do nome (para o roster.csv sem --espn)."""
+    """Resolve o ID do ESPN a partir do nome, quando o elenco veio sem id."""
     try:
         d = _espn_get(f"{ESPN_SEARCH}?query={requests.utils.quote(name)}&limit=10")
     except Exception:
@@ -902,17 +887,6 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
             cands.append(mk(p, pos_of(p["pid"]), ""))
         if positions is None or not positions:
             notes.append("Posicoes dos candidatos indisponiveis (PlayerIndex falhou): so UTIL foi considerado.")
-    if opts.candidates:
-        extra = []
-        for nm in read_names_csv(opts.candidates):
-            pid, _ = idx.find(nm)
-            if pid is None:
-                notes.append(f"Candidato '{nm}' nao encontrado.")
-            elif pid not in pool and all(c["pid"] != pid for c in cands):
-                extra.append(mk(profiles[pid], pos_of(pid), ""))
-        if extra:
-            fa_label = "sua lista de candidatos" + ("" if fa_players else " + top da NBA")
-            cands = extra + cands
     cands = [c for c in cands if c["status"] not in ("OUT", "IR")]
     for c in cands:
         pool[c["pid"]] = c
@@ -1151,7 +1125,7 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
                 summary.append(f"TROCA ({r['team']}): dar {r['give']['name']} por {r['get']['name']} ({r['gain']:+.1f}/jogo)")
         L += ["", "A aceitacao depende do outro dono; a liga tem 2 dias de revisao e 4 votos vetam. Evite trocas absurdamente desiguais."]
     else:
-        L.append("Sem acesso aos elencos dos outros times (rode com `--espn`). Mesmo assim:")
+        L.append("Sem acesso aos elencos dos outros times (confira as credenciais do ESPN). Mesmo assim:")
         L.append("")
         L.append("**Seus candidatos a venda (alta insustentavel):** " +
                  (", ".join(f"{e['name']} ({'; '.join(e['why'])})" for e in sells) if sells else "nenhum no momento."))
@@ -1181,7 +1155,7 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
     if stale:
         notes.append("Sem jogos nesta temporada (time pode estar desatualizado): " + ", ".join(stale))
     if not any(e["status"] in ("DTD", "OUT", "IR") for e in roster) and not espn_status:
-        notes.append("Status de lesao nao informado: use a 3a coluna do roster.csv (OUT/DTD/IR) ou o modo --espn.")
+        notes.append("Status de lesao nao informado pelo ESPN; confira manualmente antes de agir.")
     if notes:
         L += ["## Avisos", ""] + [f"- {n}" for n in notes] + [""]
     return "\n".join(L), summary
@@ -1267,17 +1241,13 @@ def notify(summary, today, telegram=False, email=False):
 # --------------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser(description="Agente de NBA Fantasy (ESPN, H2H Points)")
-    ap.add_argument("--roster", default=None,
-                    help="CSV opcional: Nome, Posicao[, Status]. Sem ele, o elenco vem do ESPN")
     ap.add_argument("--team-id", type=int, default=None,
                     help="ID do seu time no ESPN (ou a variavel ESPN_TEAM_ID)")
-    ap.add_argument("--candidates", default=None, help="CSV opcional com nomes de free agents para avaliar")
-    ap.add_argument("--espn", action="store_true", help="usa a API do ESPN (free agents, lesoes, outros elencos)")
     ap.add_argument("--source", choices=["auto", "nba", "espn"], default="auto",
                     help="fonte dos game logs: auto (detecta), nba_api ou API publica do ESPN")
     ap.add_argument("--adds-used", type=int, default=0, help="adds ja usados neste matchup (limite 5)")
     ap.add_argument("--recent", type=int, default=5, help="janela 'recente' em jogos")
-    ap.add_argument("--replacement", type=float, default=24.0, help="FP/jogo de nivel de reposicao (sem --espn)")
+    ap.add_argument("--replacement", type=float, default=24.0, help="FP/jogo de nivel de reposicao")
     ap.add_argument("--date", default=None, help="AAAA-MM-DD (padrao: hoje no fuso da NBA)")
     ap.add_argument("--telegram", action="store_true", help="envia o resumo pelo Telegram")
     ap.add_argument("--email", action="store_true", help="envia o resumo por email (SMTP)")
@@ -1298,49 +1268,32 @@ def main():
         team_id = int(_env("ESPN_TEAM_ID"))
 
     roster_rows = []
-    if opts.roster:
-        if Path(opts.roster).exists():
-            roster_rows = read_roster_csv(opts.roster)
-        else:
-            print(f"Aviso: '{opts.roster}' nao encontrado; usando so o elenco do ESPN.", file=sys.stderr)
-    elif Path("roster.csv").exists():
-        roster_rows = read_roster_csv("roster.csv")
-
-    if opts.candidates and not Path(opts.candidates).exists():
-        print(f"Aviso: arquivo de candidatos '{opts.candidates}' nao encontrado; ignorando --candidates.",
-              file=sys.stderr)
-        opts.candidates = None
-
     print(f"Coletando dados da NBA ({season})...", file=sys.stderr)
 
-    fa = teams = status = my_players = None
-    if opts.espn and not _env("ESPN_LEAGUE_ID"):
-        print("Aviso: --espn ignorado (falta ESPN_LEAGUE_ID no .env). Seguindo sem free agents, "
-              "lesoes do ESPN e trocas.", file=sys.stderr)
-    elif opts.espn:
-        if missing_env("ESPN_SWID", "ESPN_S2"):
-            print("Aviso: ESPN_SWID/ESPN_S2 ausentes no .env; so funciona em liga publica.", file=sys.stderr)
-        try:
-            print("Lendo liga no ESPN...", file=sys.stderr)
-            data = fetch_espn(int(season[:4]) + 1, [r["name"] for r in roster_rows],
-                              team_id=team_id)
-            fa, teams, status = data["fa"], data["teams"], data["my_status"]
-            my_players = data.get("my_players") or []
-            if data.get("my_team"):
-                print(f"Seu time: {data['my_team']} (id {data.get('my_team_id')}, "
-                      f"{len(my_players)} jogadores)", file=sys.stderr)
-            if not status:
-                print("Aviso: nao consegui identificar seu time no ESPN; trocas podem incluir "
-                      "seu proprio elenco. Use ESPN_TEAM_ID ou --team-id.", file=sys.stderr)
-            elif not roster_rows:
-                roster_rows = roster_rows_from_espn(my_players)
-        except Exception as ex:
-            print(f"Aviso: falha no ESPN ({ex}). Seguindo sem ele "
-                  "(confira ESPN_LEAGUE_ID, ESPN_SWID e ESPN_S2; os cookies expiram).", file=sys.stderr)
+    if not _env("ESPN_LEAGUE_ID"):
+        sys.exit("Defina ESPN_LEAGUE_ID (e ESPN_TEAM_ID) no .env: o elenco vem da API do ESPN.")
 
-    if not roster_rows:
-        sys.exit("Nenhum elenco disponivel: defina ESPN_LEAGUE_ID + ESPN_TEAM_ID (ou ESPN_SWID/ESPN_S2) "
-                 "rodando com --espn, ou informe um --roster CSV.")
+    if missing_env("ESPN_SWID", "ESPN_S2"):
+        print("Aviso: ESPN_SWID/ESPN_S2 ausentes no .env; so funciona em liga publica.", file=sys.stderr)
+
+    fa = teams = status = my_players = None
+    print("Lendo liga no ESPN...", file=sys.stderr)
+    try:
+        data = fetch_espn(int(season[:4]) + 1, team_id=team_id)
+    except Exception as ex:
+        sys.exit(f"Falha ao ler a liga no ESPN ({ex}). "
+                 "Confira ESPN_LEAGUE_ID, ESPN_SWID e ESPN_S2 (os cookies expiram).")
+
+    fa, teams, status = data["fa"], data["teams"], data["my_status"]
+    my_players = data.get("my_players") or []
+    if data.get("my_team"):
+        print(f"Seu time: {data['my_team']} (id {data.get('my_team_id')}, "
+              f"{len(my_players)} jogadores)", file=sys.stderr)
+    if not my_players:
+        sys.exit("Nao consegui identificar seu time no ESPN. "
+                 "Defina ESPN_TEAM_ID (o numero teamId=... na URL do seu time).")
+
+    roster_rows = roster_rows_from_espn(my_players)
 
     source = opts.source
     if source == "auto":
