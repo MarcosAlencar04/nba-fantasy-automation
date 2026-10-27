@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Portao de execucao para o GitHub Actions (so stdlib, roda em ~1s).
 
-O workflow e disparado por dois crons: um fixo de manha e outro a cada 30 min.
-Nas execucoes de 30 min este script decide se e hora de rodar: so libera quando
-o momento atual esta entre (primeiro jogo - PREGAME_LEAD_MIN) e o primeiro jogo.
+O workflow e disparado por dois crons: um fixo de manha e outro a cada 15 min.
+A cada 15 min este script decide se e hora de rodar: libera quando **algum** jogo
+do dia comeca dentro da janela `PREGAME_LEAD_MIN`. Assim cada jogo tem sua propria
+avaliacao, mesmo quando varios comecam em sequencia curta.
 
 Saida: escreve run=true|false em $GITHUB_OUTPUT.
 """
@@ -30,17 +31,18 @@ def emit(run, reason):
 
 
 def lead_minutes():
-    raw = (os.getenv("PREGAME_LEAD_MIN") or "30").strip()
+    raw = (os.getenv("PREGAME_LEAD_MIN") or "15").strip()
     try:
-        return max(0, int(raw))
+        return max(1, int(raw))
     except ValueError:
-        return 30
+        return 15
 
 
-def first_tip(day_et):
-    url = f"{SCOREBOARD}?dates={day_et:%Y%m%d}"
+def todays_games(day_et):
+    """[(tip_utc, 'BOS x BKN'), ...] dos jogos de hoje ainda nao iniciados."""
     req = urllib.request.Request(
-        url, headers={"Accept": "application/json", "User-Agent": "nba-fantasy-agent"}
+        f"{SCOREBOARD}?dates={day_et:%Y%m%d}",
+        headers={"Accept": "application/json", "User-Agent": "nba-fantasy-agent"},
     )
     try:
         with urllib.request.urlopen(req, timeout=25) as resp:
@@ -50,18 +52,19 @@ def first_tip(day_et):
         return None
 
     now = datetime.now(timezone.utc)
-    times = []
+    games = []
     for ev in data.get("events") or []:
         status = ((ev.get("status") or {}).get("type") or {}).get("name")
         if status not in ("STATUS_SCHEDULED", None):
             continue
         try:
-            start = datetime.fromisoformat(str(ev["date"]).replace("Z", "+00:00"))
+            tip = datetime.fromisoformat(str(ev["date"]).replace("Z", "+00:00"))
         except (KeyError, ValueError):
             continue
-        if start > now:
-            times.append(start)
-    return min(times) if times else None
+        if tip <= now:
+            continue
+        games.append((tip, ev.get("shortName") or ev.get("name") or "jogo"))
+    return sorted(games)
 
 
 def main():
@@ -70,19 +73,28 @@ def main():
         emit(True, "execucao da manha")
         return
 
-    tip = first_tip(datetime.now(ET).date())
-    if tip is None:
+    games = todays_games(datetime.now(ET).date())
+    if games is None:
+        emit(False, "placar do ESPN indisponivel")
+        return
+    if not games:
         emit(False, "sem jogos restantes hoje")
         return
 
-    target = tip - timedelta(minutes=lead_minutes())
+    lead = timedelta(minutes=lead_minutes())
     now = datetime.now(timezone.utc)
-    if now < target:
-        emit(False, f"faltam {int((target - now).total_seconds() // 60)} min para a janela")
-    elif now >= tip:
-        emit(False, "o primeiro jogo ja comecou")
+    in_window = [g for g in games if timedelta(0) <= g[0] - now < lead]
+    if in_window:
+        names = ", ".join(f"{name} {tip.astimezone(ET):%H:%M}" for tip, name in in_window[:3])
+        emit(True, f"janela aberta: {names} ET")
+        return
+
+    tip, name = games[0]
+    wait = int((tip - lead - now).total_seconds() // 60)
+    if wait > 0:
+        emit(False, f"proxima janela em {wait} min ({name} {tip.astimezone(ET):%H:%M} ET)")
     else:
-        emit(True, f"dentro da janela (jogo as {tip.astimezone(ET):%H:%M} ET)")
+        emit(False, f"janela de {name} ja passou; proximo jogo {tip.astimezone(ET):%H:%M} ET")
 
 
 if __name__ == "__main__":

@@ -1062,7 +1062,22 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
     digest = dict(date=today, lineup=[], bench=[], alerts=[], adds=[], trades=[], ir=[],
                   total=0.0, week="", adds_left=0, repl=0.0, empty_slots=0,
                   ir_used=0, ir_free=IR_SLOTS, tight=[], lineup_choice=False,
-                  sells=[], buys=[])
+                  sells=[], buys=[], changes=[], changes_known=False,
+                  lineup_only=bool(getattr(opts, "lineup_only", False)))
+
+    def finalize():
+        low = [e["name"] for e in roster if e["conf"] < 0.3]
+        if low:
+            notes.append("Amostra pequena na temporada para: " + ", ".join(low) +
+                         ". A projecao pesa mais a temporada passada ate ~15 jogos.")
+        stale = [e["name"] for e in roster if e["stale"]]
+        if stale:
+            notes.append("Sem jogos nesta temporada (time pode estar desatualizado): " + ", ".join(stale))
+        if not any(e["status"] in ("DTD", "OUT", "IR") for e in roster) and not espn_status:
+            notes.append("Status de lesao nao informado pelo ESPN; confira manualmente antes de agir.")
+        if notes:
+            L.extend(["## Avisos", ""] + [f"- {n}" for n in notes] + [""])
+        return "\n".join(L), summary, digest
 
     week_start = today - timedelta(days=today.weekday())
     week_end = week_start + timedelta(days=6)
@@ -1148,6 +1163,16 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
     # nivel de reposicao
     healthy = sorted((c["proj_fppg"] for c in cands), reverse=True)
     repl = healthy[4] if (fa_players and len(healthy) >= 5) else opts.replacement
+
+    # Free agent so entra na lista se estiver pontuando bem: projecao acima do nivel
+    # de reposicao e sem sinal de queda. Quem esta em baixa nao ajuda agora.
+    cands = [c for c in cands
+             if c["proj_fppg"] >= repl
+             and c["tag"] not in ("PAPEL_ENCOLHENDO", "AMOSTRA_PEQUENA")
+             and c["conf"] >= 0.2
+             and c["fp5"] >= repl * 0.85]
+    for c in cands:
+        pool[c["pid"]] = c
 
     # ---- cabecalho ---------------------------------------------------
     adds_left = max(0, ADDS_LIMIT - opts.adds_used)
@@ -1286,6 +1311,60 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
     L += ["", "Regras: fora por lesao e com retorno distante ocupa IR; day-to-day nao gasta vaga; "
           "quem esta no IR sem lesao precisa ser ativado para voltar a pontuar.", ""]
 
+    # ========== 2b) MUDANCAS NECESSARIAS NA ESCALACAO ==================
+    # Compara o lineup recomendado com o que esta realmente escalado no ESPN
+    # (campo lineupSlot). Sem estado entre execucoes: o ESPN e a fonte da verdade.
+    current = {}
+    for r in roster_rows:
+        slot = (r.get("lineup_slot") or "").upper()
+        slot = "UTIL" if slot == "UT" else slot
+        if slot in LINEUP_SLOTS:
+            current[norm_name(r["name"])] = (r["name"], slot)
+
+    recom = {norm_name(pool[active_ids[pi]]["name"]): (pool[active_ids[pi]]["name"],
+                                                      LINEUP_SLOTS[sj])
+             for sj, pi in assign}
+    by_name = {norm_name(e["name"]): e for e in roster}
+    changes = []
+    if current:
+        for key, (name, slot) in recom.items():
+            if key not in current:
+                p = by_name.get(key)
+                changes.append(dict(kind="entrar", name=name, slot=slot,
+                                    fp=(p["dv"][today] if p else 0.0),
+                                    proj=(p["proj_fppg"] if p else 0.0),
+                                    why="esta no banco do ESPN e deveria ser titular hoje"))
+        for key, (name, slot) in current.items():
+            if key in recom:
+                continue
+            p = by_name.get(key)
+            st = p["status"] if p else "ACTIVE"
+            if st in ("OUT", "IR"):
+                kind, why = "lesionado", "segue escalado mesmo fora por lesao"
+            elif st == "DTD":
+                kind, why = "risco", "day-to-day escalado: confirme antes do jogo"
+            else:
+                kind, why = "sair", "renderia menos que uma opcao no banco hoje"
+            changes.append(dict(kind=kind, name=name, slot=slot,
+                                fp=(p["dv"][today] if p else 0.0),
+                                proj=(p["proj_fppg"] if p else 0.0), why=why))
+    digest["changes"] = changes
+    digest["changes_known"] = bool(current)
+
+    if changes:
+        L += [f"**Mudancas necessarias na escalacao** ({len(changes)}):"]
+        for c in changes:
+            L.append(f"- [{c['slot']}] **{c['name']}**: {c['why']} ({c['fp']:.1f} FP hoje)")
+        L.append("")
+        for c in changes[:3]:
+            summary.append(f"ESCALACAO: {c['why'].split(':')[0]} {c['name']} ({c['slot']})")
+    elif current:
+        L += ["Escalacao ja esta igual a recomendada: nenhuma mudanca necessaria.", ""]
+
+    # Modo enxuto (pre-jogo): so lineup + IR.
+    if digest["lineup_only"]:
+        return finalize()
+
     # ========== 3) SEMANA / FORMA ======================================
     cw = cur[(cur.GAME_DATE >= week_start) & (cur.GAME_DATE <= today)] if len(cur) else cur
     wk = {k: g for k, g in cw.groupby("PLAYER_ID")} if len(cw) else {}
@@ -1304,14 +1383,15 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
         elif e["tag"] == "VENDER_NA_ALTA":
             ver = "VENDER NA ALTA"
         elif e["tag"] == "COMPRAR_NA_BAIXA":
-            ver = "SEGURAR (fase ruim e passageira)"
+            ver = "SEGURAR (fase ruim passageira - nao vender agora)"
         elif e["tag"] == "PAPEL_ENCOLHENDO":
             ver = "ALERTA: papel encolhendo"
         elif e["proj_fppg"] < repl - 1:
             ver = "CANDIDATO A DROP"
         else:
             ver = "Manter"
-        if e["tag"] in ("VENDER_NA_ALTA", "COMPRAR_NA_BAIXA", "PAPEL_ENCOLHENDO", "ALTA_SUSTENTAVEL"):
+        # No proprio elenco so importa o risco de queda: comprar na baixa nao e acao.
+        if e["tag"] in ("VENDER_NA_ALTA", "PAPEL_ENCOLHENDO"):
             flags.append(e)
         rows.append((e["name"], e["team"], f"{nj}J - {fps:.0f} (esp. {exp:.0f}; z={z:+.1f})" if nj else "0J",
                      f1(e["fp5"]), f1(e["proj_fppg"]), sgn(e["delta_form"]), sgn(e["min_delta"]),
@@ -1558,18 +1638,7 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
     L.append("")
 
     # ========== NOTAS ===================================================
-    low = [e["name"] for e in roster if e["conf"] < 0.3]
-    if low:
-        notes.append("Amostra pequena na temporada para: " + ", ".join(low) +
-                     ". A projecao pesa mais a temporada passada ate ~15 jogos.")
-    stale = [e["name"] for e in roster if e["stale"]]
-    if stale:
-        notes.append("Sem jogos nesta temporada (time pode estar desatualizado): " + ", ".join(stale))
-    if not any(e["status"] in ("DTD", "OUT", "IR") for e in roster) and not espn_status:
-        notes.append("Status de lesao nao informado pelo ESPN; confira manualmente antes de agir.")
-    if notes:
-        L += ["## Avisos", ""] + [f"- {n}" for n in notes] + [""]
-    return "\n".join(L), summary, digest
+    return finalize()
 
 
 # --------------------------------------------------------------------------
@@ -1706,7 +1775,10 @@ def render_email_html(d):
 
     rows = []
 
+    lineup_only = bool(d.get("lineup_only"))
+
     # ---------- cabecalho ----------
+    kicker = "NBA Fantasy · Pre-jogo" if lineup_only else "NBA Fantasy"
     rows.append(
         f'<tr><td style="background:{SOFT};padding:26px 28px;'
         f'border-bottom:1px solid {LINE}">'
@@ -1714,19 +1786,25 @@ def render_email_html(d):
         f'<td width="54" valign="middle">{logo_html}</td>'
         f'<td valign="middle" style="padding-left:14px">'
         f'<div style="color:{ORANGE};font-size:10px;letter-spacing:2.4px;'
-        f'text-transform:uppercase;font-weight:700">NBA Fantasy</div>'
+        f'text-transform:uppercase;font-weight:700">{esc(kicker)}</div>'
         f'<div style="color:#ffffff;font-size:21px;font-weight:700;margin-top:4px">{team}</div>'
         f'<div style="color:{MUTED};font-size:12px;margin-top:4px">{esc(meta)}</div>'
         f'</td></tr></table></td></tr>')
 
     # ---------- faixa de numeros ----------
+    if lineup_only:
+        ir_used = d.get("ir_used", 0)
+        stats = (_stat("FP projetado hoje", f"{d.get('total', 0):.0f}", ORANGE)
+                 + _stat("Titulares", f"{len(d.get('lineup') or [])}")
+                 + _stat("IR em uso", f"{ir_used}/{IR_SLOTS}"))
+    else:
+        stats = (_stat("FP projetado hoje", f"{d.get('total', 0):.0f}", ORANGE)
+                 + _stat("Adds restantes", f"{d.get('adds_left', 0)}/{d.get('adds_limit', 5)}")
+                 + _stat("Nivel de reposicao", f"{d.get('repl', 0):.0f}"))
     rows.append(
         f'<tr><td style="padding:6px 20px 0 20px"><table role="presentation" width="100%" '
         f'cellpadding="0" cellspacing="0" border="0" style="border-bottom:1px solid {LINE}"><tr>'
-        + _stat("FP projetado hoje", f"{d.get('total', 0):.0f}", ORANGE)
-        + _stat("Adds restantes", f"{d.get('adds_left', 0)}/{d.get('adds_limit', 5)}")
-        + _stat("Nivel de reposicao", f"{d.get('repl', 0):.0f}")
-        + '</tr></table></td></tr>')
+        + stats + '</tr></table></td></tr>')
 
     # ---------- lineup ----------
     lineup = d.get("lineup") or []
@@ -1768,6 +1846,36 @@ def render_email_html(d):
         rows.append(_section("Escalacao de hoje"))
         rows.append(f'<tr><td style="padding:0 28px"><div style="color:{MUTED};font-size:13px">'
                     f'Nenhum jogador com jogo hoje.</div></td></tr>')
+
+    # ---------- mudancas necessarias ----------
+    changes = d.get("changes") or []
+    if changes:
+        kind_style = {
+            "entrar": ("Adicionar", GREEN_BG, GREEN_FG),
+            "sair": ("Remover", AMBER_BG, AMBER_FG),
+            "lesionado": ("Lesionado escalado", RED_BG, RED_FG),
+            "risco": ("Risco (DTD)", AMBER_BG, AMBER_FG),
+        }
+        cards = []
+        for c in changes:
+            label, bg, fg = kind_style.get(c["kind"], ("Alterar", GREY_BG, GREY_FG))
+            cards.append(
+                f'<div style="border-left:3px solid {fg};background:{SOFT};padding:11px 14px;'
+                f'border-radius:6px;margin-bottom:8px">'
+                f'<div style="font-size:13px"><span style="font-weight:700;color:{INK}">'
+                f'{esc(c["name"])}</span> <span style="color:{MUTED}">slot {esc(c["slot"])}</span>'
+                f'<span style="display:inline-block;margin-left:6px;padding:2px 8px;border-radius:999px;'
+                f'background:{bg};color:{fg};font-size:10px;font-weight:700;text-transform:uppercase;'
+                f'letter-spacing:.4px">{esc(label)}</span></div>'
+                f'<div style="color:{MUTED};font-size:12px;margin-top:4px">{esc(c["why"])} '
+                f'({c["fp"]:.1f} FP hoje)</div></div>')
+        rows.append(_section("Mudancas necessarias na escalacao",
+                             f"{len(changes)} ajuste(s) para hoje"))
+        rows.append(f'<tr><td style="padding:0 28px">{"".join(cards)}</td></tr>')
+    elif d.get("changes_known"):
+        rows.append(_section("Mudancas necessarias na escalacao"))
+        rows.append(f'<tr><td style="padding:0 28px"><div style="color:{GREEN_FG};font-size:13px">'
+                    f'Escalacao ja esta igual a recomendada.</div></td></tr>')
 
     # ---------- disputa por vaga ----------
     tight = d.get("tight") or []
@@ -1940,11 +2048,14 @@ def render_email_html(d):
                     f'cellpadding="0" cellspacing="0" border="0">{"".join(body)}</table></td></tr>')
 
     # ---------- rodape ----------
+    footer = ("Projecao estatistica, nao garantia. Confirme o status dos jogadores no app "
+              "antes do primeiro jogo.")
+    if not lineup_only:
+        footer += f"<br>Prazo de trocas em {d.get('trade_days', 0)} dias."
     rows.append(
         f'<tr><td style="padding:22px 28px 26px 28px;border-top:1px solid {LINE}">'
         f'<div style="color:{GREY_FG};font-size:11px;line-height:1.6">'
-        f'Projecao estatistica, nao garantia. Confira lesoes e noticias antes de agir.<br>'
-        f'Prazo de trocas em {d.get("trade_days", 0)} dias · gerado pelo NBA Fantasy Agent'
+        f'{footer}<br>gerado pelo NBA Fantasy Agent'
         f'</div></td></tr>')
 
     return (
@@ -1995,6 +2106,8 @@ def main():
     ap.add_argument("--telegram", action="store_true", help="envia o resumo pelo Telegram")
     ap.add_argument("--email", action="store_true", help="envia o resumo por email (SMTP)")
     ap.add_argument("--notify", action="store_true", help="envia o resumo pelo Telegram e por email")
+    ap.add_argument("--lineup-only", action="store_true",
+                    help="relatorio enxuto: so escalacao e IR (usado no pre-jogo)")
     ap.add_argument("--refresh", action="store_true", help="ignora o cache de dados")
     ap.add_argument("--out-dir", default="reports")
     opts = ap.parse_args()
@@ -2083,7 +2196,17 @@ def main():
     print(f"\n[salvo em {f}]", file=sys.stderr)
     want_telegram = opts.telegram or opts.notify
     want_email = opts.email or opts.notify
-    if summary and (want_telegram or want_email):
+
+    # Pre-jogo: so notifica quando a escalacao precisa mudar. Se nao deu para ler o
+    # lineup atual no ESPN (changes_known=False), envia mesmo assim (fail-open).
+    skip_reason = None
+    if digest.get("lineup_only") and digest.get("changes_known") and not digest.get("changes"):
+        skip_reason = ("pre-jogo: escalacao ja esta correta, nenhuma mudanca necessaria; "
+                       "notificacao nao enviada")
+
+    if skip_reason:
+        print(skip_reason, file=sys.stderr)
+    elif summary and (want_telegram or want_email):
         try:
             notify(summary, today, telegram=want_telegram, email=want_email, digest=digest)
         except Exception as ex:

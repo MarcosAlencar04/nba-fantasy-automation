@@ -39,6 +39,7 @@ python nba-fantasy-agent.py --source espn    # forca a fonte ESPN
 - `--adds-used N`: quantos dos 5 adds do matchup voce ja gastou.
 - `--refresh`: ignora o cache e baixa os dados de novo.
 - `--source`: `auto` (detecta), `nba` ou `espn`.
+- `--lineup-only`: relatorio enxuto, so escalacao e IR (usado no pre-jogo).
 
 O relatorio e salvo em `reports/relatorio_AAAA-MM-DD.md`.
 
@@ -97,8 +98,29 @@ O workflow e `.github/workflows/nba-fantasy.yml`. Ele usa dois cron triggers:
 
 | Cron (UTC) | Quando | O que faz |
 |---|---|---|
-| `0 13 * * *` | 10h BRT | roda direto |
-| `*/30 * * * *` | a cada 30 min | `gate.py` decide se e hora |
+| `0 13 * * *` | 10h BRT | relatorio completo |
+| `*/15 * * * *` | a cada 15 min | `gate.py` libera 15 min antes de **cada** jogo do dia |
+
+O `gate.py` olha apenas o relogio: consulta o placar do ESPN, lista os jogos que ainda vao
+comecar e libera a execucao quando algum deles comeca dentro de `PREGAME_LEAD_MIN`. Assim
+cada jogo tem sua propria reavaliacao da escalacao, inclusive quando varios comecam em
+sequencia curta (ex.: 19:30, 20:00 e 20:30).
+
+A execucao da manha recebe `--notify`; as demais recebem `--notify --lineup-only`, entao o
+email do pre-jogo traz so **escalacao** e **IR** (sem sinais, add/drop e trocas).
+
+**O pre-jogo so notifica quando ha mudanca necessaria.** O agente compara a escalacao
+recomendada com a que esta realmente no ESPN (campo `lineupSlot`) e envia apenas se houver:
+
+- jogador no banco que deveria ser titular;
+- titular que renderia menos que uma opcao do banco;
+- titular lesionado (`OUT`/`IR`) ou day-to-day escalado.
+
+Se a escalacao ja estiver correta, nada e enviado (o relatorio continua sendo salvo no
+artifact). Se o ESPN nao informar o `lineupSlot`, o agente envia mesmo assim (fail-open).
+
+> `PREGAME_LEAD_MIN` deve ser igual ou maior que o intervalo do cron. Com 15/15 a janela
+de cada jogo pega exatamente uma execucao.
 
 ### Configurar (uma vez, no GitHub)
 

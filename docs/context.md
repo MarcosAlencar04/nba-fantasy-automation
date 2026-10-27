@@ -138,7 +138,11 @@ Funções principais:
 
 ### Argumentos de linha de comando
 
-`--team-id`, `--source {auto,nba,espn}`, `--adds-used N`, `--recent N` (janela recente, padrão 5 jogos), `--replacement X` (nível de reposição, padrão 24), `--date AAAA-MM-DD`, `--telegram`, `--email`, `--notify`, `--refresh`, `--out-dir`.
+`--team-id`, `--source {auto,nba,espn}`, `--adds-used N`, `--recent N` (janela recente, padrão 5 jogos), `--replacement X` (nível de reposição, padrão 24), `--date AAAA-MM-DD`, `--telegram`, `--email`, `--notify`, `--lineup-only`, `--refresh`, `--out-dir`.
+
+### Modo enxuto (`--lineup-only`)
+
+Usado no pré-jogo. Gera apenas escalação (com disputa por vaga) e IR/status — sem sinais, add/drop nem trocas. O email muda o cabeçalho para "Pre-jogo" e troca a faixa de números (FP projetado / titulares / IR em uso). O `gate.py` só decide *quando* rodar; quem define *o que* sai é essa flag, aplicada pelo workflow quando `MODE != morning`.
 
 ### Fonte de dados (`--source`)
 
@@ -235,12 +239,31 @@ Rótulos: **baixo** (recusa ≤ 35%), **médio** (36–60%) e **alto** (> 60%). 
 
 ### 5.8 Sinais da semana (comprar e vender)
 
-A seção reúne os dois lados da operação, não só o que fazer com o próprio elenco:
+A seção reúne os dois lados da operação, com regras diferentes por origem do jogador:
 
-- **Vender** (`VENDER_NA_ALTA`, `PAPEL_ENCOLHENDO`): jogadores do seu time em fase acima do sustentável ou perdendo minutos.
-- **Comprar** (`COMPRAR_NA_BAIXA`): jogadores de **elencos rivais** em fase de baixa, com projeção acima do nível de reposição. A lista mostra o nome do dono atual, porque a aquisição é por troca, não por waiver.
+- **Seu elenco — apenas risco de queda.** Só entram `VENDER_NA_ALTA` (fase acima do sustentável) e `PAPEL_ENCOLHENDO` (perdendo minutos). "Comprar na baixa" não é ação sobre um jogador que já é seu: nesse caso o veredito é **SEGURAR (fase ruim passageira — não vender agora)**.
+- **Elencos rivais — alvo de compra.** `COMPRAR_NA_BAIXA` com projeção acima do nível de reposição. A lista mostra o dono atual, porque a aquisição é por troca.
 
-### 5.9 Cache
+### 5.9 Free agents
+
+Só entram candidatos que estão **pontuando bem**: projeção ≥ nível de reposição, `conf ≥ 0,2` (amostra mínima) e média recente ≥ 85% do nível de reposição. Jogadores em `PAPEL_ENCOLHENDO` ou com amostra pequena são descartados antes da otimização de add/drop.
+
+### 5.10 Agendamento
+
+`gate.py` libera a execução quando **algum** jogo do dia começa dentro de `PREGAME_LEAD_MIN` (padrão 15 min). O cron roda a cada 15 min, então cada jogo tem sua própria reavaliação — inclusive jogos em sequência curta. A execução da manhã ignora o gate.
+
+**Notificação condicional no pré-jogo:** o agente compara a escalação recomendada (otimizador) com a que está realmente no ESPN (`lineupSlot`), sem precisar de estado entre execuções. Só envia quando há mudança:
+
+| Mudança | Peso |
+|---|---|
+| Jogador no banco que deveria ser titular | `entrar` |
+| Titular que renderia menos que o banco | `sair` |
+| Titular `OUT`/`IR` | `lesionado` |
+| Titular day-to-day | `risco` |
+
+A comparação é por **conjunto de nomes**, não por slot, para não acusar mudança quando o otimizador apenas permuta posições. Se `lineupSlot` vier vazio (fonte sem slot), `changes_known=False` e a notificação é enviada mesmo assim — falhar aberto é melhor do que não avisar.
+
+### 5.11 Cache
 
 Game log da temporada atual: 3 h. Temporada anterior: 7 dias. Calendário: 12 h. Estatísticas dos times: 6 h. Posições: 72 h. `--refresh` ignora.
 

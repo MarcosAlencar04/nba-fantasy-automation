@@ -4,8 +4,9 @@ on:
   schedule:
     # 10:00 em Brasilia (UTC-3). O cron do GitHub e sempre UTC.
     - cron: "0 13 * * *"
-    # A cada 30 min: o gate.py so deixa rodar na janela de 30 min antes do 1o jogo.
-    - cron: "*/30 * * * *"
+    # A cada 15 min: o gate.py libera 15 min antes de CADA jogo do dia,
+    # entao cada jogo tem sua propria reavaliacao da escalacao.
+    - cron: "*/15 * * * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -39,7 +40,7 @@ jobs:
       SMTP_PASS: ${{ secrets.SMTP_PASS }}
       EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
       EMAIL_TO: ${{ secrets.EMAIL_TO }}
-      PREGAME_LEAD_MIN: "30"
+      PREGAME_LEAD_MIN: "15"
       ADDS_USED: ${{ vars.ADDS_USED }}
 
     steps:
@@ -59,7 +60,15 @@ jobs:
 
       - name: Rodar o agente
         if: steps.gate.outputs.run == 'true'
-        run: python nba-fantasy-agent.py --notify
+        run: |
+          # A execucao da manha traz o relatorio completo; as demais (pre-jogo)
+          # trazem so escalacao e IR.
+          ARGS="--notify"
+          if [ "$MODE" != "morning" ]; then
+            ARGS="$ARGS --lineup-only"
+          fi
+          echo "modo: $MODE | args: $ARGS"
+          python nba-fantasy-agent.py $ARGS
 
       - name: Guardar o relatorio
         if: steps.gate.outputs.run == 'true'
