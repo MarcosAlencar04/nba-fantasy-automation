@@ -39,6 +39,7 @@ jobs:
       SMTP_USER: ${{ secrets.SMTP_USER }}
       SMTP_PASS: ${{ secrets.SMTP_PASS }}
       EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+      EMAIL_FROM_NAME: ${{ vars.EMAIL_FROM_NAME || 'NBA Fantasy Daily Report' }}
       EMAIL_TO: ${{ secrets.EMAIL_TO }}
       PREGAME_LEAD_MIN: "15"
       ADDS_USED: ${{ vars.ADDS_USED }}
