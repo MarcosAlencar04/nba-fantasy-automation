@@ -83,7 +83,10 @@ def main():
 
     lead = timedelta(minutes=lead_minutes())
     now = datetime.now(timezone.utc)
-    in_window = [g for g in games if timedelta(0) <= g[0] - now < lead]
+    # Janela inclusiva nos dois extremos: um jogo que comeca exatamente `lead`
+    # minutos depois entra aqui. Sem isso, jogos em horario redondo (:00/:30)
+    # ficariam de fora quando o cron tem o mesmo intervalo do lead.
+    in_window = [g for g in games if timedelta(0) < g[0] - now <= lead]
     if in_window:
         names = ", ".join(f"{name} {tip.astimezone(ET):%H:%M}" for tip, name in in_window[:3])
         emit(True, f"janela aberta: {names} ET")

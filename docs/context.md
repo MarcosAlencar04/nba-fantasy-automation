@@ -250,25 +250,18 @@ Só entram candidatos que estão **pontuando bem**: projeção ≥ nível de rep
 
 ### 5.10 Agendamento
 
-`gate.py` libera a execução quando **algum** jogo do dia começa dentro de `PREGAME_LEAD_MIN` (padrão 30 min). O cron roda a cada 15 min, então cada jogo tem **duas** tentativas de avaliação — uma 30 e outra 15 min antes do tip-off. Isso cobre o cron *best-effort* do GitHub, que atrasa e eventualmente descarta ticks em horário de pico. A execução da manhã ignora o gate.
+`gate.py` libera a execução quando **algum** jogo do dia começa dentro de `PREGAME_LEAD_MIN` (30 min). O cron roda a cada 30 min, então cada jogo corresponde a **exatamente uma** execução, sempre antes do tip-off. A execução da manhã ignora o gate.
 
-Para o segundo tick não repetir o aviso, o agente grava o fingerprint do conjunto de mudanças em `.cache/notified.json`:
+A janela é **inclusiva nos dois extremos** (`0 < tip − agora ≤ lead`). Isso é essencial: jogos da NBA caem em horários redondos (:00 e :30), iguais aos ticks do cron. Com comparação estrita, o tick exatamente 30 min antes do jogo ficaria de fora e o jogo seria avaliado só no próprio horário do tip-off — tarde demais.
 
-```
-{"date": "2026-10-27", "fp": "77eaa93ebd3d3ba4"}
-```
+| Jogo (ET) | Janela | Tick que dispara | Antecedência |
+|---|---|---|---|
+| 19:30 | 19:00–19:30 | 19:00 | 30 min |
+| 20:00 | 19:30–20:00 | 19:30 | 30 min |
+| 20:10 | 19:40–20:10 | 20:00 | 10 min |
+| 22:00 | 21:30–22:00 | 21:30 | 30 min |
 
-O fingerprint é `sha1(dia + kind:nome:slot ordenados)`. Regras:
-
-| Situação | Ação |
-|---|---|
-| Mesmo conjunto já avisado hoje | não envia |
-| Conjunto diferente (ex.: novo lesionado) | envia |
-| Escalação já correta | não envia |
-| ESPN sem `lineupSlot` (fail-open) | envia |
-| Envio falhou em algum canal | não grava o fingerprint (tenta no próximo tick) |
-
-O workflow preserva o arquivo com `actions/cache/restore` + `actions/cache/save` (chave `notified-<run_id>`, `restore-keys: notified-`), porque o runner é descartado a cada execução.
+Não há deduplicação: cada jogo gera o seu próprio aviso, o que é o comportamento desejado (um email por jogo, não um resumo do dia).
 
 **Notificação condicional no pré-jogo:** o agente compara a escalação recomendada (otimizador) com a que está realmente no ESPN (`lineupSlot`), sem precisar de estado entre execuções. Só envia quando há mudança **acionável**:
 

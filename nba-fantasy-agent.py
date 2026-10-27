@@ -28,8 +28,6 @@ from __future__ import annotations
 
 import argparse
 import difflib
-import hashlib
-import json
 import math
 import os
 import pickle
@@ -2146,26 +2144,6 @@ def render_email_html(d):
     )
 
 
-def changes_fingerprint(changes, today):
-    """Identidade do conjunto de mudancas de hoje (ordem nao importa)."""
-    items = sorted((c["kind"], norm_name(c["name"]), c["slot"]) for c in changes)
-    raw = "|".join(f"{k}:{n}:{s}" for k, n, s in items)
-    return hashlib.sha1(f"{today.isoformat()}|{raw}".encode()).hexdigest()[:16]
-
-
-def load_notified(path):
-    try:
-        return json.loads(Path(path).read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
-
-def save_notified(path, today, fingerprint):
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps({"date": today.isoformat(), "fp": fingerprint}), encoding="utf-8")
-
-
 def notify(summary, today, telegram=False, email=False, digest=None):
     subject = f"NBA Fantasy {today.strftime('%d/%m')}"
     text = subject + "\n\n" + "\n".join(summary)
@@ -2290,29 +2268,17 @@ def main():
 
     # Pre-jogo: so notifica quando a escalacao precisa mudar. Se nao deu para ler o
     # lineup atual no ESPN (changes_known=False), envia mesmo assim (fail-open).
-    # Como a janela do gate pode cobrir mais de um tick do cron, guardamos o
-    # fingerprint do que ja foi avisado para nao repetir o mesmo alerta.
+    # Cada jogo tem sua propria janela no gate, entao cada um gera seu aviso.
     skip_reason = None
-    fingerprint = None
-    state_file = Path.cwd() / ".cache" / "notified.json"
-    if digest.get("lineup_only"):
-        if digest.get("changes_known") and not digest.get("changes"):
-            skip_reason = ("pre-jogo: escalacao ja esta correta, nenhuma mudanca necessaria; "
-                           "notificacao nao enviada")
-        elif digest.get("changes"):
-            fingerprint = changes_fingerprint(digest["changes"], today)
-            prev = load_notified(state_file)
-            if prev.get("date") == today.isoformat() and prev.get("fp") == fingerprint:
-                skip_reason = ("pre-jogo: esta mesma mudanca ja foi avisada hoje; "
-                               "notificacao repetida ignorada")
+    if digest.get("lineup_only") and digest.get("changes_known") and not digest.get("changes"):
+        skip_reason = ("pre-jogo: escalacao ja esta correta, nenhuma mudanca necessaria; "
+                       "notificacao nao enviada")
 
     if skip_reason:
         print(skip_reason, file=sys.stderr)
     elif summary and (want_telegram or want_email):
         try:
-            sent = notify(summary, today, telegram=want_telegram, email=want_email, digest=digest)
-            if fingerprint and sent:
-                save_notified(state_file, today, fingerprint)
+            notify(summary, today, telegram=want_telegram, email=want_email, digest=digest)
         except Exception as ex:
             traceback.print_exc()
             print(f"Aviso: falha ao notificar ({ex}); o relatorio foi salvo normalmente.", file=sys.stderr)

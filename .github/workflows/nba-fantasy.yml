@@ -4,9 +4,9 @@ on:
   schedule:
     # 10:00 em Brasilia (UTC-3). O cron do GitHub e sempre UTC.
     - cron: "0 13 * * *"
-    # A cada 15 min: o gate.py libera 15 min antes de CADA jogo do dia,
-    # entao cada jogo tem sua propria reavaliacao da escalacao.
-    - cron: "*/15 * * * *"
+    # A cada 30 min: o gate libera a execucao 30 min antes de CADA jogo do dia,
+    # entao cada jogo gera o seu proprio aviso de escalacao.
+    - cron: "*/30 * * * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -41,9 +41,8 @@ jobs:
       EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
       EMAIL_FROM_NAME: ${{ vars.EMAIL_FROM_NAME || 'NBA Fantasy Daily Report' }}
       EMAIL_TO: ${{ secrets.EMAIL_TO }}
-      # Janela do gate: 30 min. Com cron de 15 min caem 2 tentativas por jogo,
-      # entao um tick atrasado ou descartado pelo GitHub nao perde a avaliacao.
-      # O agente deduplica o aviso, entao nao vira email repetido.
+      # Janela do gate: 30 min antes de cada jogo. Com cron de 30 min, cada jogo
+      # cai em exatamente uma execucao -> um aviso por jogo, sem repeticao.
       PREGAME_LEAD_MIN: "30"
       ADDS_USED: ${{ vars.ADDS_USED }}
 
@@ -65,17 +64,6 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         run: pip install -r requirements.txt
 
-      # Guarda o fingerprint do que ja foi avisado hoje. Sem isso, dois ticks
-      # dentro da mesma janela mandariam o mesmo email duas vezes.
-      - name: Restaurar estado de notificacao
-        if: steps.gate.outputs.run == 'true'
-        uses: actions/cache/restore@v4
-        with:
-          path: .cache/notified.json
-          key: notified-${{ github.run_id }}
-          restore-keys: |
-            notified-
-
       - name: Rodar o agente
         if: steps.gate.outputs.run == 'true'
         run: |
@@ -87,15 +75,6 @@ jobs:
           fi
           echo "modo: $MODE | args: $ARGS"
           python nba-fantasy-agent.py $ARGS
-
-      - name: Salvar estado de notificacao
-        if: steps.gate.outputs.run == 'true'
-        uses: actions/cache/save@v4
-        # Se nada foi notificado o arquivo nao existe; nao e erro.
-        continue-on-error: true
-        with:
-          path: .cache/notified.json
-          key: notified-${{ github.run_id }}
 
       - name: Guardar o relatorio
         if: steps.gate.outputs.run == 'true'
