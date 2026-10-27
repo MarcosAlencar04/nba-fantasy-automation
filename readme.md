@@ -1,8 +1,13 @@
 # NBA Fantasy Agent (ESPN, H2H Points)
 
+Agente que analisa seu elenco de NBA Fantasy no ESPN e manda o resumo por Telegram e/ou email.
+Roda localmente e de graça (o agendamento está na seção 6). Ele só recomenda: você aplica no app.
+
 ## 1. Instalar
 
 ```bash
+python -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
 ```
 
@@ -70,95 +75,64 @@ Email (SMTP): `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `EMAIL_FROM` e
 A mensagem e a mesma nos dois canais: o resumo do dia (lineup, vendas, adds e trocas),
 nao o relatorio completo. Se nao houver nada a sinalizar, nada e enviado.
 
-## 6. Automatizar
+## 6. Agendar de graca na nuvem (GitHub Actions)
 
-Linux/Mac, todo dia as 10h (cron):
+Roda 2x por dia sem depender da sua maquina e sem custo:
 
-```
-0 10 * * * cd /caminho/da/pasta && python nba_fantasy_agent.py --espn --notify
-```
+1. **10h (Brasilia)**: relatorio completo.
+2. **30 min antes do primeiro jogo**: so roda se aquele momento estiver na janela
+   (`gate.py` verifica o horario do primeiro jogo na API do ESPN e libera a execucao).
 
-Windows: use o Agendador de Tarefas.
+O workflow e `.github/workflows/nba-fantasy.yml`. Ele usa dois cron triggers:
 
-Rode na sua maquina: o stats.nba.com costuma bloquear IPs de servidores (GitHub Actions, por exemplo).
+| Cron (UTC) | Quando | O que faz |
+|---|---|---|
+| `0 13 * * *` | 10h BRT | roda direto |
+| `*/30 * * * *` | a cada 30 min | `gate.py` decide se e hora |
 
-## 7. Cloudflare (Container + Worker)
+### Configurar (uma vez, no GitHub)
 
-Roda na nuvem sem depender da sua maquina. Precisa do plano **Workers Paid** (US$ 5/mes).
-O Worker cuida do agendamento; o agente roda dentro de um Container Python.
+1. **Settings > Secrets and variables > Actions > Secrets**: adicione
+   `ESPN_LEAGUE_ID`, `ESPN_SWID`, `ESPN_S2`, `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`,
+   `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `EMAIL_FROM`, `EMAIL_TO`.
+2. **Aba Variables**: crie `ROSTER_CSV` com seu elenco (um jogador por linha, mesma
+   sintaxe do `roster.csv`) e, se quiser, `ADDS_USED`.
+3. **Actions > NBA Fantasy > Run workflow** com `mode = morning` para testar.
 
-Como funciona:
+O relatorio fica como artifact de cada execucao (7 dias).
 
-- `crons = ["0 13 * * *"]` no `wrangler.toml`: 10h em Brasilia = 13h UTC. Cron do Workers e sempre UTC.
-- Depois da execucao da manha, o Durable Object consulta o calendario (ESPN) e agenda um alarme para
-  **30 minutos antes do primeiro jogo do dia**. Se nao houver jogo, nenhum alarme e criado.
-- O Container sobe, roda `nba-fantasy-agent.py --espn --notify` e devolve o relatorio em JSON.
+### Por que nao no Cloudflare
 
-Arquivos:
+Testado e descartado, no plano gratuito:
 
-| Arquivo | Papel |
-|---|---|
-| `Dockerfile` | Imagem Python com `requirements.txt`, o agente e o `container/server.py`. |
-| `container/server.py` | Servidor HTTP minimo com `/health` e `/run`. |
-| `src/index.ts` | Worker (cron + trigger manual) e Durable Object (alarme, ciclo de vida do Container). |
-| `wrangler.toml` | Configuracao de cron, container e binding. |
+| Limite do Free | Valor | Efeito |
+|---|---|---|
+| CPU por invocacao | **10 ms** | o parsing de 1 game log (~78 KB) ja consome boa parte disso |
+| Subrequests por invocacao | 50 | seriam necessarios ~260 requests para elenco + free agents |
+| Python Workers | Pyodide/WASM | sem `scipy` (otimizador de lineup) e sem sockets (`nba_api`/`espn_api`) |
+| Containers | **plano pago** | e o unico runtime com CPython de verdade |
 
-### Subir
+### Fonte de dados
 
-```bash
-npm install
-npx wrangler login
-```
+O `stats.nba.com` bloqueia IPs de datacenter, entao o agente detecta o ambiente
+(`--source auto`) e, quando bloqueado, passa a usar a **API publica do ESPN**
+(game logs, calendario e, com cookies, free agents/lesoes). Diferencas nessa fonte:
 
-Segredos (os mesmos nomes do `.env`):
+- Rebotes ofensivos sao estimados em 24% do total (o gamelog do ESPN nao separa OREB/DREB);
+- Ritmo/defesa dos times (fator de ambiente) fica desligado;
+- O universo analisado e o da sua liga + free agents (precisa de `--espn`).
 
-```bash
-npx wrangler secret put ESPN_LEAGUE_ID
-npx wrangler secret put ESPN_SWID
-npx wrangler secret put ESPN_S2
-npx wrangler secret put TELEGRAM_TOKEN
-npx wrangler secret put TELEGRAM_CHAT_ID
-npx wrangler secret put SMTP_HOST
-npx wrangler secret put SMTP_PORT
-npx wrangler secret put SMTP_USER
-npx wrangler secret put SMTP_PASS
-npx wrangler secret put EMAIL_FROM
-npx wrangler secret put EMAIL_TO
-npx wrangler secret put RUN_TOKEN      # protege o disparo manual
-```
+Para forcar uma fonte: `--source nba` ou `--source espn`.
 
-O roster pode vir do `roster.csv` da imagem (exige redeploy a cada mudanca) ou da variavel
-`ROSTER_CSV`, que sobrevive sem rebuild:
-
-```toml
-[vars]
-ROSTER_CSV = """
-Nikola Jokic, C
-LeBron James, SF/PF
-Ayo Dosunmu, SG/PG, DTD
-"""
-```
-
-Deploy e disparo manual:
+### Rodar na sua maquina (alternativa offline)
 
 ```bash
-npx wrangler deploy
-curl -X POST "https://nba-fantasy.SEU-SUBDOMINIO.workers.dev/run?token=SEU_RUN_TOKEN&notify=0"
+python scheduler.py --plan          # mostra os proximos horarios
+python scheduler.py --once morning  # roda agora, uma vez
+python scheduler.py                 # loop continuo (deixe rodando)
 ```
 
-Logs:
+O estado do dia fica em `.cache/scheduler_state.json`: reiniciar o processo nao repete o
+envio, e uma falha e tentada ate 3 vezes. Para manter sempre ativo no Linux, use o unit em
+`systemd/nba-fantasy.service` (`systemctl --user enable --now nba-fantasy`).
 
-```bash
-npx wrangler tail
-```
-
-### Antes de confiar, valide
-
-1. **`stats.nba.com` a partir do Cloudflare.** Ele bloqueia varios IPs de datacenter. Se o relatorio
-   sair vazio, use o deploy local (secao 6).
-2. **SMTP a partir do Container.** Se o envio falhar, troque o email por uma API HTTP (Resend,
-   SendGrid) dentro de `send_email`.
-3. **Tempo de execucao.** Sem cache local, cada execucao baixa tudo de novo (30-90 s).
-
-Alternativa mais barata e sem esses riscos: manter o Python na sua maquina (secao 6) e usar o
-Worker so para agendar/disparar.

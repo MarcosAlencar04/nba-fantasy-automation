@@ -88,6 +88,7 @@ Consequência: eficiência importa muito nesta liga. Um jogador que só chuta mu
 - **Dados da NBA:** biblioteca `nba_api` (game logs, estatísticas avançadas dos times, posições) mais o calendário oficial em `cdn.nba.com`.
 - **Free agents:** só dá para identificá-los com credenciais do ESPN (`--espn`). Sem isso, o agente avalia a NBA inteira e pede para o usuário conferir a disponibilidade. Há também a opção `--candidates` com uma lista manual.
 - **Execução automática:** descartada por ora (frágil e pode violar os termos do ESPN). O fluxo é semi-automático: o agente recomenda, o usuário aplica.
+- **Hospedagem:** roda no **GitHub Actions** (grátis, 2 execuções/dia). Cloudflare foi descartado: no plano Free o limite é 10 ms de CPU por invocação, 50 subrequests por chamada, e Python Workers é Pyodide (sem `scipy`, sem sockets para `nba_api`/`espn_api`); Containers exige plano pago.
 - **Idioma:** relatório e comentários em português.
 - **Dia do fantasy:** fuso `America/New_York`. A semana vai de segunda a domingo.
 
@@ -123,6 +124,10 @@ Funções principais:
 | Arquivo | Função |
 |---|---|
 | `nba_fantasy_agent.py` | O agente. |
+| `gate.py` | Portão do GitHub Actions: libera a execução só na janela de 30 min antes do 1º jogo. |
+| `.github/workflows/nba-fantasy.yml` | Agendamento na nuvem (cron da manhã + a cada 30 min). |
+| `scheduler.py` | Agendador alternativo para rodar localmente (loop contínuo). |
+| `systemd/nba-fantasy.service` | Unit do systemd para o agendador local. |
 | `roster.csv` | Elenco do usuário (hoje só tem 3 jogadores de exemplo). |
 | `candidates.example.csv` | Modelo de lista de candidatos. |
 | `env.example.txt` | Modelo de configuração; copiar para `.env`. |
@@ -133,7 +138,16 @@ Funções principais:
 
 ### Argumentos de linha de comando
 
-`--roster`, `--candidates`, `--espn`, `--adds-used N`, `--recent N` (janela recente, padrão 5 jogos), `--replacement X` (nível de reposição, padrão 24), `--date AAAA-MM-DD`, `--telegram`, `--email`, `--notify`, `--refresh`, `--out-dir`.
+`--roster`, `--candidates`, `--espn`, `--source {auto,nba,espn}`, `--adds-used N`, `--recent N` (janela recente, padrão 5 jogos), `--replacement X` (nível de reposição, padrão 24), `--date AAAA-MM-DD`, `--telegram`, `--email`, `--notify`, `--refresh`, `--out-dir`.
+
+### Fonte de dados (`--source`)
+
+O `stats.nba.com` bloqueia IPs de datacenter (GitHub Actions, cloud). Com `auto` (padrão), o agente testa o `stats.nba.com` e, se bloqueado, usa a API pública do ESPN:
+
+- `--source nba`: `nba_api` (game logs de toda a liga, ritmo/defesa, posições).
+- `--source espn`: game logs por jogador em paralelo (`site.web.api.espn.com/.../gamelog`), calendário e, com cookies, free agents/lesões.
+
+Limitações do modo ESPN: OREB estimado em 24% do total de rebotes, fator de ambiente (ritmo/defesa) desligado e universo restrito ao elenco + free agents da liga.
 
 ---
 

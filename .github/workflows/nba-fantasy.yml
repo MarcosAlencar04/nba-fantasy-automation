@@ -1,0 +1,80 @@
+name: NBA Fantasy
+
+on:
+  schedule:
+    # 10:00 em Brasilia (UTC-3). O cron do GitHub e sempre UTC.
+    - cron: "0 13 * * *"
+    # A cada 30 min: o gate.py so deixa rodar na janela de 30 min antes do 1o jogo.
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "morning = relatorio da manha; gate = so se estiver perto do jogo"
+        type: choice
+        default: morning
+        options: [morning, gate]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nba-fantasy
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MODE: ${{ github.event.schedule == '0 13 * * *' && 'morning' || github.event.inputs.mode || 'gate' }}
+      ESPN_LEAGUE_ID: ${{ secrets.ESPN_LEAGUE_ID }}
+      ESPN_SWID: ${{ secrets.ESPN_SWID }}
+      ESPN_S2: ${{ secrets.ESPN_S2 }}
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      SMTP_HOST: ${{ secrets.SMTP_HOST }}
+      SMTP_PORT: ${{ secrets.SMTP_PORT }}
+      SMTP_USER: ${{ secrets.SMTP_USER }}
+      SMTP_PASS: ${{ secrets.SMTP_PASS }}
+      EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+      EMAIL_TO: ${{ secrets.EMAIL_TO }}
+      ROSTER_CSV: ${{ vars.ROSTER_CSV }}
+      PREGAME_LEAD_MIN: "30"
+      ADDS_USED: ${{ vars.ADDS_USED }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Decidir se executa agora
+        id: gate
+        run: python gate.py
+
+      - name: Instalar dependencias
+        if: steps.gate.outputs.run == 'true'
+        run: pip install -r requirements.txt
+
+      - name: Preparar roster
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          if [ -n "$ROSTER_CSV" ]; then
+            printf '%s\n' "$ROSTER_CSV" > roster.csv
+            echo "roster vindo da variavel ROSTER_CSV"
+          fi
+          cat roster.csv
+
+      - name: Rodar o agente
+        if: steps.gate.outputs.run == 'true'
+        run: python nba-fantasy-agent.py --espn --notify
+
+      - name: Guardar o relatorio
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: relatorio-${{ github.run_id }}
+          path: reports/
+          retention-days: 7
+          if-no-files-found: ignore

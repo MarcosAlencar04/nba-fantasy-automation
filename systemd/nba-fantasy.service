@@ -1,0 +1,15 @@
+[Unit]
+Description=NBA Fantasy Agent (agendador: manha + 30 min antes do primeiro jogo)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Ajuste os dois caminhos abaixo para a sua pasta e o seu python/venv
+WorkingDirectory=%h/personal/nba-fantasy-automation
+ExecStart=%h/personal/nba-fantasy-automation/venv/bin/python %h/personal/nba-fantasy-automation/scheduler.py
+Restart=on-failure
+RestartSec=60
+
+[Install]
+WantedBy=default.target

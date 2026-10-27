@@ -36,7 +36,7 @@ import sys
 import time
 import unicodedata
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -585,7 +585,9 @@ def fetch_espn(year, roster_names, fa_size=150):
     def conv(p):
         return dict(name=p.name, elig=elig_from_espn(p),
                     status=getattr(p, "injuryStatus", "ACTIVE"),
-                    owned=getattr(p, "percent_owned", None))
+                    owned=getattr(p, "percent_owned", None),
+                    espn_id=getattr(p, "playerId", None),
+                    team=getattr(p, "proTeam", "") or "")
 
     mine = {norm_name(n) for n in roster_names}
     teams, best, my_idx = [], -1, None
@@ -595,14 +597,176 @@ def fetch_espn(year, roster_names, fa_size=150):
         teams.append((t.team_name, pl))
         if ov > best:
             best, my_idx = ov, i
-    my_status = {}
+    my_status, my_players = {}, []
     if my_idx is not None and best >= 3:
         my_status = {norm_name(x["name"]): x["status"] for x in teams[my_idx][1]}
-        my_name = teams.pop(my_idx)[0]
+        my_name, my_players = teams.pop(my_idx)
     else:
         my_name = None
     fa = [conv(p) for p in lg.free_agents(size=fa_size)]
-    return dict(fa=fa, teams=teams, my_status=my_status, my_team=my_name)
+    return dict(fa=fa, teams=teams, my_status=my_status, my_team=my_name, my_players=my_players)
+
+
+# --------------------------------------------------------------------------
+# Fonte de dados alternativa: API publica do ESPN
+# Usada quando o stats.nba.com esta bloqueado (GitHub Actions, IPs de cloud).
+# --------------------------------------------------------------------------
+ESPN_GAMELOG = ("https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba/"
+                "athletes/{pid}/gamelog?season={year}")
+ESPN_SEARCH = "https://site.web.api.espn.com/apis/search/v2"
+# O gamelog do ESPN nao separa rebotes ofensivos; ~24% dos rebotes da NBA sao ofensivos.
+OREB_SHARE = 0.24
+
+
+def _espn_get(url, timeout=30):
+    r = requests.get(url, headers=UA, timeout=timeout)
+    r.raise_for_status()
+    return r.json()
+
+
+def _pair(v):
+    """'8-18' -> (8, 18); '35' -> (35, 0)."""
+    parts = str(v).split("-")
+    try:
+        made = float(parts[0]) if parts[0] else 0.0
+        att = float(parts[1]) if len(parts) > 1 and parts[1] else 0.0
+        return made, att
+    except ValueError:
+        return 0.0, 0.0
+
+
+def espn_gamelog(pid, season, name="", team=""):
+    """Converte o gamelog do ESPN nas linhas que prep_logs espera."""
+    year = int(season[:4]) + 1
+    try:
+        d = _espn_get(ESPN_GAMELOG.format(pid=pid, year=year))
+    except Exception as ex:
+        print(f"Aviso: gamelog ESPN de {name or pid} falhou ({ex}).", file=sys.stderr)
+        return []
+    labels = d.get("labels") or []
+    col = {lab: i for i, lab in enumerate(labels)}
+    rows = []
+    for stype in d.get("seasonTypes") or []:
+        for cat in stype.get("categories") or []:
+            for ev in cat.get("events") or []:
+                info = (d.get("events") or {}).get(ev.get("eventId"), {})
+                gdate = info.get("gameDate")
+                stats = ev.get("stats") or []
+                if not gdate or len(stats) != len(labels):
+                    continue
+
+                def val(lab):
+                    i = col.get(lab)
+                    return stats[i] if i is not None and i < len(stats) else "0"
+
+                minutes = val("MIN")
+                try:
+                    if float(minutes or 0) <= 0:
+                        continue
+                except ValueError:
+                    continue
+                fgm, fga = _pair(val("FG"))
+                fg3m, fg3a = _pair(val("3PT"))
+                ftm, fta = _pair(val("FT"))
+                reb = float(val("REB") or 0)
+                team_abbr = ((info.get("team") or {}).get("abbreviation") or team or "")
+                try:
+                    gdt = datetime.fromisoformat(gdate.replace("Z", "+00:00"))
+                    if gdt.tzinfo is None:
+                        gdt = gdt.replace(tzinfo=timezone.utc)
+                    game_day = gdt.astimezone(ET).date().isoformat()
+                except ValueError:
+                    game_day = gdate[:10]
+                rows.append(dict(
+                    PLAYER_ID=int(pid), PLAYER_NAME=name, TEAM_ABBREVIATION=team_abbr,
+                    GAME_DATE=game_day, MIN=float(minutes),
+                    FGM=fgm, FGA=fga, FG3M=fg3m, FG3A=fg3a, FTM=ftm, FTA=fta,
+                    OREB=round(reb * OREB_SHARE, 2), REB=reb,
+                    AST=float(val("AST") or 0), STL=float(val("STL") or 0),
+                    BLK=float(val("BLK") or 0), TOV=float(val("TO") or 0),
+                    PTS=float(val("PTS") or 0),
+                ))
+    return rows
+
+
+def espn_search_id(name):
+    """Resolve o ID do ESPN a partir do nome (para o roster.csv sem --espn)."""
+    try:
+        d = _espn_get(f"{ESPN_SEARCH}?query={requests.utils.quote(name)}&limit=10")
+    except Exception:
+        return None, None, None
+    best = None
+    for grp in d.get("results") or []:
+        if grp.get("type") != "player":
+            continue
+        for item in grp.get("contents") or []:
+            sub = (item.get("subtitle") or "")
+            if "NBA" not in sub.upper() and item.get("sport") != "basketball":
+                continue
+            uid = (item.get("uid") or "")
+            tail = uid.rsplit("~a:", 1)[-1]
+            if tail.isdigit():
+                best = best or dict(pid=int(tail), name=item.get("displayName"), team="")
+    return (best["pid"], best["name"], best["team"]) if best else (None, None, None)
+
+
+def fetch_logs_espn(season, players, workers=6):
+    """players: [{'espn_id', 'name', 'team'}]. Baixa os game logs em paralelo."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(p):
+        return espn_gamelog(p["espn_id"], season, p.get("name", ""), p.get("team", ""))
+
+    rows = []
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        for part in ex.map(one, players):
+            rows.extend(part)
+    return pd.DataFrame(rows, columns=["PLAYER_ID", "PLAYER_NAME", "TEAM_ABBREVIATION",
+                                      "GAME_DATE", "MIN", "FGM", "FGA", "FG3M", "FG3A",
+                                      "FTM", "FTA", "OREB", "REB", "AST", "STL", "BLK",
+                                      "TOV", "PTS"])
+
+
+def build_universe_espn(roster_rows, fa_players=None, my_players=None, teams=None):
+    """Monta a lista de jogadores a analisar: elenco, free agents e outros times.
+
+    Cada item precisa de um espn_id; nomes sem id (sem --espn) sao resolvidos
+    pela busca do ESPN.
+    """
+    universe, seen = [], set()
+
+    def add(pid, name, team=""):
+        if not pid or int(pid) in seen:
+            return
+        seen.add(int(pid))
+        universe.append(dict(espn_id=int(pid), name=name or "", team=team or ""))
+
+    for plist in [my_players or []] + [pl for _, pl in (teams or [])] + [fa_players or []]:
+        for p in plist:
+            add(p.get("espn_id"), p.get("name"), p.get("team", ""))
+
+    for r in roster_rows:
+        nm = r["name"]
+        target = norm_name(nm)
+        if any(norm_name(u["name"]) == target for u in universe):
+            continue
+        pid, resolved, team = espn_search_id(nm)
+        if pid is None:
+            print(f"Aviso: nao achei '{nm}' na API do ESPN; ele fica fora da analise.",
+                  file=sys.stderr)
+            continue
+        add(pid, resolved or nm, team)
+
+    return universe
+
+
+def nba_reachable(timeout=8):
+    """O stats.nba.com bloqueia IPs de datacenter (GitHub Actions, cloud)."""
+    try:
+        r = requests.get("https://stats.nba.com/stats/commonplayerinfo", headers=UA, timeout=timeout)
+        return r.status_code == 200
+    except Exception:
+        return False
 
 
 # --------------------------------------------------------------------------
@@ -1044,6 +1208,8 @@ def main():
     ap.add_argument("--roster", default="roster.csv", help="CSV: Nome, Posicao[, Status]")
     ap.add_argument("--candidates", default=None, help="CSV opcional com nomes de free agents para avaliar")
     ap.add_argument("--espn", action="store_true", help="usa a API do ESPN (free agents, lesoes, outros elencos)")
+    ap.add_argument("--source", choices=["auto", "nba", "espn"], default="auto",
+                    help="fonte dos game logs: auto (detecta), nba_api ou API publica do ESPN")
     ap.add_argument("--adds-used", type=int, default=0, help="adds ja usados neste matchup (limite 5)")
     ap.add_argument("--recent", type=int, default=5, help="janela 'recente' em jogos")
     ap.add_argument("--replacement", type=float, default=24.0, help="FP/jogo de nivel de reposicao (sem --espn)")
@@ -1070,21 +1236,8 @@ def main():
         opts.candidates = None
 
     print(f"Coletando dados da NBA ({season})...", file=sys.stderr)
-    cur = prep_logs(cached(f"log_{season}", 3, lambda: fetch_gamelog(season), opts.refresh))
-    prev = prep_logs(cached(f"log_{prev_season}", 168, lambda: fetch_gamelog(prev_season), opts.refresh))
-    sched = cached(f"sched_{season}", 12, lambda: fetch_schedule(season), opts.refresh)
-    try:
-        tstats = cached(f"team_{season}", 6, lambda: fetch_team_stats(season), opts.refresh)
-    except Exception as ex:
-        print(f"Aviso: ritmo/defesa dos times indisponivel ({ex}).", file=sys.stderr)
-        tstats = None
-    try:
-        positions = cached(f"pos_{season}", 72, lambda: fetch_positions(season), opts.refresh)
-    except Exception as ex:
-        print(f"Aviso: posicoes (PlayerIndex) indisponiveis ({ex}).", file=sys.stderr)
-        positions = {}
 
-    fa = teams = status = None
+    fa = teams = status = my_players = None
     if opts.espn and not _env("ESPN_LEAGUE_ID"):
         print("Aviso: --espn ignorado (falta ESPN_LEAGUE_ID no .env). Seguindo sem free agents, "
               "lesoes do ESPN e trocas.", file=sys.stderr)
@@ -1095,12 +1248,45 @@ def main():
             print("Lendo liga no ESPN...", file=sys.stderr)
             data = fetch_espn(int(season[:4]) + 1, [r["name"] for r in roster_rows])
             fa, teams, status = data["fa"], data["teams"], data["my_status"]
+            my_players = data.get("my_players") or []
             if not status:
                 print("Aviso: nao consegui identificar seu time no ESPN; trocas podem incluir seu proprio elenco.",
                       file=sys.stderr)
         except Exception as ex:
             print(f"Aviso: falha no ESPN ({ex}). Seguindo sem ele "
                   "(confira ESPN_LEAGUE_ID, ESPN_SWID e ESPN_S2; os cookies expiram).", file=sys.stderr)
+
+    source = opts.source
+    if source == "auto":
+        source = "nba" if nba_reachable() else "espn"
+    print(f"Fonte de dados: {'stats.nba.com' if source == 'nba' else 'API publica do ESPN'}",
+          file=sys.stderr)
+
+    if source == "espn":
+        universe = build_universe_espn(roster_rows, fa, my_players, teams)
+        cur = prep_logs(cached(f"espn_{season}", 3,
+                               lambda: fetch_logs_espn(season, universe), opts.refresh))
+        prev = prep_logs(cached(f"espn_{prev_season}", 168,
+                                lambda: fetch_logs_espn(prev_season, universe), opts.refresh))
+        tstats, positions = None, {}
+        print(f"Jogadores analisados: {len(universe)}", file=sys.stderr)
+    else:
+        cur = prep_logs(cached(f"log_{season}", 3, lambda: fetch_gamelog(season), opts.refresh))
+        prev = prep_logs(cached(f"log_{prev_season}", 168, lambda: fetch_gamelog(prev_season), opts.refresh))
+        try:
+            tstats = cached(f"team_{season}", 6, lambda: fetch_team_stats(season), opts.refresh)
+        except Exception as ex:
+            print(f"Aviso: ritmo/defesa dos times indisponivel ({ex}).", file=sys.stderr)
+            tstats = None
+        try:
+            positions = cached(f"pos_{season}", 72, lambda: fetch_positions(season), opts.refresh)
+        except Exception as ex:
+            print(f"Aviso: posicoes (PlayerIndex) indisponiveis ({ex}).", file=sys.stderr)
+            positions = {}
+
+    sched = cached(f"sched_{season}", 12, lambda: fetch_schedule(season), opts.refresh)
+    if not sched:
+        print("Aviso: calendario vazio; o relatorio sai sem jogos do dia.", file=sys.stderr)
 
     report, summary = run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
                                    fa_players=fa, other_teams=teams, espn_status=status)
