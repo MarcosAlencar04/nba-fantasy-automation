@@ -119,6 +119,10 @@ jogos da NBA caem em horarios redondos (:00 e :30), iguais aos ticks do cron: se
 inclusiva, o tick exatamente 30 min antes seria descartado e o jogo so seria avaliado no
 proprio horario do tip-off.
 
+A janela tambem atravessa a meia-noite: um jogo as 00:00 ET e avisado as 23:30 do dia
+anterior. O gate consulta os dois dias ET que a janela toca — normalmente um so, e dois
+apenas nos ultimos 30 minutos da noite.
+
 A execucao da manha recebe `--notify`; as demais recebem `--notify --lineup-only`, entao o
 email do pre-jogo traz so **escalacao** e **IR** (sem sinais, add/drop e trocas).
 

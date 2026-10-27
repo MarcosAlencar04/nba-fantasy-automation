@@ -260,6 +260,7 @@ A janela é **inclusiva nos dois extremos** (`0 < tip − agora ≤ lead`). Isso
 | 20:00 | 19:30–20:00 | 19:30 | 30 min |
 | 20:10 | 19:40–20:10 | 20:00 | 10 min |
 | 22:00 | 21:30–22:00 | 21:30 | 30 min |
+| 00:00 (dia seguinte) | 23:30–00:00 | 23:30 | 30 min |
 
 Não há deduplicação: cada jogo gera o seu próprio aviso, o que é o comportamento desejado (um email por jogo, não um resumo do dia).
 

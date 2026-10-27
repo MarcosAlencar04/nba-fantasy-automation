@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Portao de execucao para o GitHub Actions (so stdlib, roda em ~1s).
 
-O workflow e disparado por dois crons: um fixo de manha e outro a cada 15 min.
-A cada 15 min este script decide se e hora de rodar: libera quando **algum** jogo
+O workflow e disparado por dois crons: um fixo de manha e outro a cada 30 min.
+A cada 30 min este script decide se e hora de rodar: libera quando **algum** jogo
 do dia comeca dentro da janela `PREGAME_LEAD_MIN`. Assim cada jogo tem sua propria
 avaliacao, mesmo quando varios comecam em sequencia curta.
+
+A janela pode atravessar a meia-noite: um jogo as 00:00 ET e consultado a partir
+das 23:30 do dia anterior.
 
 Saida: escreve run=true|false em $GITHUB_OUTPUT.
 """
@@ -31,15 +34,19 @@ def emit(run, reason):
 
 
 def lead_minutes():
-    raw = (os.getenv("PREGAME_LEAD_MIN") or "15").strip()
+    raw = (os.getenv("PREGAME_LEAD_MIN") or "30").strip()
     try:
         return max(1, int(raw))
     except ValueError:
-        return 15
+        return 30
 
 
-def todays_games(day_et):
-    """[(tip_utc, 'BOS x BKN'), ...] dos jogos de hoje ainda nao iniciados."""
+def games_on(day_et):
+    """[(tip_utc, 'BOS x BKN'), ...] dos jogos do dia ET informado ainda nao iniciados.
+
+    Devolve None se o placar do ESPN nao responder, para o chamador distinguir
+    "sem jogos" de "nao consegui consultar".
+    """
     req = urllib.request.Request(
         f"{SCOREBOARD}?dates={day_et:%Y%m%d}",
         headers={"Accept": "application/json", "User-Agent": "nba-fantasy-agent"},
@@ -64,7 +71,31 @@ def todays_games(day_et):
         if tip <= now:
             continue
         games.append((tip, ev.get("shortName") or ev.get("name") or "jogo"))
-    return sorted(games)
+    return games
+
+
+def upcoming_games(now, lead):
+    """Jogos que podem comecar dentro da janela, cruzando a virada do dia ET.
+
+    Um jogo as 00:00 ET pertence ao dia seguinte, mas a janela abre as 23:30 do
+    dia anterior. Consultamos os dois dias que a janela toca: normalmente e um
+    so, e vira dois apenas na ultima `lead` da noite.
+    """
+    today_et = now.astimezone(ET).date()
+    horizon_et = (now + lead).astimezone(ET).date()
+    days = [today_et] if today_et == horizon_et else [today_et, horizon_et]
+
+    games, ok = [], False
+    for day in days:
+        found = games_on(day)
+        if found is None:
+            continue
+        ok = True
+        games.extend(found)
+    if not ok:
+        return None
+    # a segunda consulta pode repetir jogos do mesmo dia; dedup por horario+nome
+    return sorted(set(games))
 
 
 def main():
@@ -73,7 +104,9 @@ def main():
         emit(True, "execucao da manha")
         return
 
-    games = todays_games(datetime.now(ET).date())
+    lead = timedelta(minutes=lead_minutes())
+    now = datetime.now(timezone.utc)
+    games = upcoming_games(now, lead)
     if games is None:
         emit(False, "placar do ESPN indisponivel")
         return
@@ -81,8 +114,6 @@ def main():
         emit(False, "sem jogos restantes hoje")
         return
 
-    lead = timedelta(minutes=lead_minutes())
-    now = datetime.now(timezone.utc)
     # Janela inclusiva nos dois extremos: um jogo que comeca exatamente `lead`
     # minutos depois entra aqui. Sem isso, jogos em horario redondo (:00/:30)
     # ficariam de fora quando o cron tem o mesmo intervalo do lead.
