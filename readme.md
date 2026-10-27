@@ -11,9 +11,10 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## 2. Montar o roster
+## 2. Elenco (vem do ESPN)
 
-Edite o `roster.csv`, um jogador por linha:
+Com `ESPN_TEAM_ID` no `.env`, o agente le o seu elenco direto da API do ESPN -
+nao precisa manter nenhum arquivo. O CSV continua disponivel como override manual:
 
 ```
 Lebron James, SF/PF
@@ -21,38 +22,48 @@ Nikola Jokic, C
 Ayo Dosunmu, SG/PG, DTD
 ```
 
-A 3a coluna (status) e opcional: `OUT`, `DTD` ou `IR`.
+A 3a coluna (status) e opcional: `OUT`, `DTD` ou `IR`. Se `roster.csv` existir, ele tem
+prioridade sobre o elenco do ESPN (util para corrigir uma lesao que o ESPN ainda nao marcou).
+
+Onde achar o `ESPN_TEAM_ID`: na URL do seu time (`...&teamId=3`), ou na lista de times da liga
+(o agente imprime os IDs quando nao encontra o seu).
 
 ## 3. Rodar
 
 ```bash
-python nba_fantasy_agent.py
+python nba-fantasy-agent.py --espn
 ```
 
 Opcoes uteis:
 
 ```bash
-python nba_fantasy_agent.py --adds-used 2
-python nba_fantasy_agent.py --candidates candidates.csv
-python nba_fantasy_agent.py --refresh
+python nba-fantasy-agent.py --espn --adds-used 2
+python nba-fantasy-agent.py --espn --candidates candidates.csv
+python nba-fantasy-agent.py --espn --refresh
+python nba-fantasy-agent.py --espn --source espn   # forca a fonte ESPN
 ```
 
 - `--adds-used N`: quantos dos 5 adds do matchup voce ja gastou.
 - `--candidates arquivo.csv`: free agents especificos para avaliar (um nome por linha).
 - `--refresh`: ignora o cache e baixa os dados de novo.
+- `--source`: `auto` (detecta), `nba` ou `espn`.
 
 O relatorio e salvo em `reports/relatorio_AAAA-MM-DD.md`.
 
-## 4. Modo ESPN (free agents reais, lesoes e trocas)
+## 4. Modo ESPN (elenco, free agents, lesoes e trocas)
 
-1. Copie `env.example.txt` para um arquivo chamado `.env`.
+1. Copie `.env.example` para `.env`.
 2. `ESPN_LEAGUE_ID`: o numero `leagueId=...` na URL da sua liga.
-3. `ESPN_SWID` e `ESPN_S2`: no navegador logado no espn.com, aperte F12, va em Application (Chrome) ou Storage (Firefox), depois Cookies, e copie os valores.
-4. Rode:
+3. `ESPN_TEAM_ID`: o numero `teamId=...` na URL do seu time (dispensa o `roster.csv`).
+4. `ESPN_SWID` e `ESPN_S2`: no navegador logado no espn.com, aperte F12, va em Application (Chrome) ou Storage (Firefox), depois Cookies, e copie os valores.
+5. Rode:
 
 ```bash
-python nba_fantasy_agent.py --espn
+python nba-fantasy-agent.py --espn
 ```
+
+Na primeira execucao ele imprime `Seu time: <nome> (id N, 14 jogadores)`. Se aparecer o aviso
+de time nao identificado, confira o `ESPN_TEAM_ID`.
 
 Os cookies expiram de tempos em tempos. Se der erro de autenticacao, copie de novo.
 
@@ -93,10 +104,11 @@ O workflow e `.github/workflows/nba-fantasy.yml`. Ele usa dois cron triggers:
 ### Configurar (uma vez, no GitHub)
 
 1. **Settings > Secrets and variables > Actions > Secrets**: adicione
-   `ESPN_LEAGUE_ID`, `ESPN_SWID`, `ESPN_S2`, `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`,
-   `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `EMAIL_FROM`, `EMAIL_TO`.
-2. **Aba Variables**: crie `ROSTER_CSV` com seu elenco (um jogador por linha, mesma
-   sintaxe do `roster.csv`) e, se quiser, `ADDS_USED`.
+   `ESPN_LEAGUE_ID`, `ESPN_TEAM_ID`, `ESPN_SWID`, `ESPN_S2`, `TELEGRAM_TOKEN`,
+   `TELEGRAM_CHAT_ID`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`,
+   `EMAIL_FROM`, `EMAIL_TO`.
+2. **Aba Variables**: opcionalmente `ADDS_USED`. Nao precisa de `ROSTER_CSV`:
+   o elenco vem do ESPN pelo `ESPN_TEAM_ID`.
 3. **Actions > NBA Fantasy > Run workflow** com `mode = morning` para testar.
 
 O relatorio fica como artifact de cada execucao (7 dias).

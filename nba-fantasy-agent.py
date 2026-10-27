@@ -577,7 +577,7 @@ def elig_from_espn(p):
     return base or parse_pos(getattr(p, "position", ""))
 
 
-def fetch_espn(year, roster_names, fa_size=150):
+def fetch_espn(year, roster_names=None, fa_size=150, team_id=None):
     from espn_api.basketball import League
     lg = League(league_id=int(_env("ESPN_LEAGUE_ID")), year=year,
                 espn_s2=_env("ESPN_S2") or None, swid=_env("ESPN_SWID") or None)
@@ -589,22 +589,45 @@ def fetch_espn(year, roster_names, fa_size=150):
                     espn_id=getattr(p, "playerId", None),
                     team=getattr(p, "proTeam", "") or "")
 
-    mine = {norm_name(n) for n in roster_names}
+    mine = {norm_name(n) for n in (roster_names or [])}
     teams, best, my_idx = [], -1, None
     for i, t in enumerate(lg.teams):
         pl = [conv(p) for p in t.roster]
+        teams.append((t.team_name, pl, getattr(t, "team_id", i + 1)))
         ov = len(mine & {norm_name(x["name"]) for x in pl})
-        teams.append((t.team_name, pl))
         if ov > best:
             best, my_idx = ov, i
-    my_status, my_players = {}, []
-    if my_idx is not None and best >= 3:
-        my_status = {norm_name(x["name"]): x["status"] for x in teams[my_idx][1]}
-        my_name, my_players = teams.pop(my_idx)
+
+    my_status, my_players, my_name, my_team_id = {}, [], None, None
+    if team_id is not None:
+        hit = next((i for i, t in enumerate(teams) if t[2] == int(team_id)), None)
+        if hit is None:
+            print(f"Aviso: time {team_id} nao existe nesta liga (ids: "
+                  f"{', '.join(str(t[2]) for t in teams)}).", file=sys.stderr)
+        my_idx = hit
+    elif roster_names and best >= 3:
+        pass
     else:
-        my_name = None
+        my_idx = None
+
+    if my_idx is not None:
+        my_name, my_players, my_team_id = teams.pop(my_idx)
+        my_status = {norm_name(x["name"]): x["status"] for x in my_players}
+
     fa = [conv(p) for p in lg.free_agents(size=fa_size)]
-    return dict(fa=fa, teams=teams, my_status=my_status, my_team=my_name, my_players=my_players)
+    return dict(fa=fa, teams=[(n, p) for n, p, _ in teams], my_status=my_status,
+                my_team=my_name, my_players=my_players, my_team_id=my_team_id)
+
+
+def roster_rows_from_espn(players):
+    """Converte o elenco do ESPN no formato do roster.csv."""
+    rows = []
+    for p in players:
+        status = norm_status(p.get("status"))
+        rows.append(dict(name=p["name"],
+                         pos="/".join(sorted(p.get("elig") or [])),
+                         status="" if status == "ACTIVE" else status))
+    return rows
 
 
 # --------------------------------------------------------------------------
@@ -1205,7 +1228,10 @@ def notify(summary, today, telegram=False, email=False):
 # --------------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser(description="Agente de NBA Fantasy (ESPN, H2H Points)")
-    ap.add_argument("--roster", default="roster.csv", help="CSV: Nome, Posicao[, Status]")
+    ap.add_argument("--roster", default=None,
+                    help="CSV opcional: Nome, Posicao[, Status]. Sem ele, o elenco vem do ESPN")
+    ap.add_argument("--team-id", type=int, default=None,
+                    help="ID do seu time no ESPN (ou a variavel ESPN_TEAM_ID)")
     ap.add_argument("--candidates", default=None, help="CSV opcional com nomes de free agents para avaliar")
     ap.add_argument("--espn", action="store_true", help="usa a API do ESPN (free agents, lesoes, outros elencos)")
     ap.add_argument("--source", choices=["auto", "nba", "espn"], default="auto",
@@ -1227,9 +1253,20 @@ def main():
     today = date.fromisoformat(opts.date) if opts.date else datetime.now(ET).date()
     season = season_str(today)
     prev_season = prev_season_str(season)
-    if not Path(opts.roster).exists():
-        sys.exit(f"Arquivo {opts.roster} nao encontrado. Crie um CSV 'Nome, Posicao' (um jogador por linha).")
-    roster_rows = read_roster_csv(opts.roster)
+
+    team_id = opts.team_id
+    if team_id is None and _env("ESPN_TEAM_ID").isdigit():
+        team_id = int(_env("ESPN_TEAM_ID"))
+
+    roster_rows = []
+    if opts.roster:
+        if Path(opts.roster).exists():
+            roster_rows = read_roster_csv(opts.roster)
+        else:
+            print(f"Aviso: '{opts.roster}' nao encontrado; usando so o elenco do ESPN.", file=sys.stderr)
+    elif Path("roster.csv").exists():
+        roster_rows = read_roster_csv("roster.csv")
+
     if opts.candidates and not Path(opts.candidates).exists():
         print(f"Aviso: arquivo de candidatos '{opts.candidates}' nao encontrado; ignorando --candidates.",
               file=sys.stderr)
@@ -1246,15 +1283,25 @@ def main():
             print("Aviso: ESPN_SWID/ESPN_S2 ausentes no .env; so funciona em liga publica.", file=sys.stderr)
         try:
             print("Lendo liga no ESPN...", file=sys.stderr)
-            data = fetch_espn(int(season[:4]) + 1, [r["name"] for r in roster_rows])
+            data = fetch_espn(int(season[:4]) + 1, [r["name"] for r in roster_rows],
+                              team_id=team_id)
             fa, teams, status = data["fa"], data["teams"], data["my_status"]
             my_players = data.get("my_players") or []
+            if data.get("my_team"):
+                print(f"Seu time: {data['my_team']} (id {data.get('my_team_id')}, "
+                      f"{len(my_players)} jogadores)", file=sys.stderr)
             if not status:
-                print("Aviso: nao consegui identificar seu time no ESPN; trocas podem incluir seu proprio elenco.",
-                      file=sys.stderr)
+                print("Aviso: nao consegui identificar seu time no ESPN; trocas podem incluir "
+                      "seu proprio elenco. Use ESPN_TEAM_ID ou --team-id.", file=sys.stderr)
+            elif not roster_rows:
+                roster_rows = roster_rows_from_espn(my_players)
         except Exception as ex:
             print(f"Aviso: falha no ESPN ({ex}). Seguindo sem ele "
                   "(confira ESPN_LEAGUE_ID, ESPN_SWID e ESPN_S2; os cookies expiram).", file=sys.stderr)
+
+    if not roster_rows:
+        sys.exit("Nenhum elenco disponivel: defina ESPN_LEAGUE_ID + ESPN_TEAM_ID (ou ESPN_SWID/ESPN_S2) "
+                 "rodando com --espn, ou informe um --roster CSV.")
 
     source = opts.source
     if source == "auto":

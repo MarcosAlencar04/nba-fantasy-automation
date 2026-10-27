@@ -28,6 +28,7 @@ jobs:
     env:
       MODE: ${{ github.event.schedule == '0 13 * * *' && 'morning' || github.event.inputs.mode || 'gate' }}
       ESPN_LEAGUE_ID: ${{ secrets.ESPN_LEAGUE_ID }}
+      ESPN_TEAM_ID: ${{ secrets.ESPN_TEAM_ID }}
       ESPN_SWID: ${{ secrets.ESPN_SWID }}
       ESPN_S2: ${{ secrets.ESPN_S2 }}
       TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
@@ -38,7 +39,6 @@ jobs:
       SMTP_PASS: ${{ secrets.SMTP_PASS }}
       EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
       EMAIL_TO: ${{ secrets.EMAIL_TO }}
-      ROSTER_CSV: ${{ vars.ROSTER_CSV }}
       PREGAME_LEAD_MIN: "30"
       ADDS_USED: ${{ vars.ADDS_USED }}
 
@@ -56,15 +56,6 @@ jobs:
       - name: Instalar dependencias
         if: steps.gate.outputs.run == 'true'
         run: pip install -r requirements.txt
-
-      - name: Preparar roster
-        if: steps.gate.outputs.run == 'true'
-        run: |
-          if [ -n "$ROSTER_CSV" ]; then
-            printf '%s\n' "$ROSTER_CSV" > roster.csv
-            echo "roster vindo da variavel ROSTER_CSV"
-          fi
-          cat roster.csv
 
       - name: Rodar o agente
         if: steps.gate.outputs.run == 'true'

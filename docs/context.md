@@ -84,7 +84,7 @@ Consequência: eficiência importa muito nesta liga. Um jogador que só chuta mu
 ## 3. Decisões tomadas
 
 - **Plataforma:** ESPN. Não há API oficial de escrita, então o agente só lê e recomenda.
-- **Roster:** vem de `roster.csv` (preferência do usuário), não do ESPN. Formato `Nome, Posição[, Status]`, com status opcional (`OUT`, `DTD`, `IR`).
+- **Roster:** vem da **API do ESPN** (`ESPN_TEAM_ID`), sem precisar de arquivo. `roster.csv` segue como override opcional no formato `Nome, Posição[, Status]`, com status (`OUT`, `DTD`, `IR`), e tem prioridade sobre o status do ESPN.
 - **Dados da NBA:** biblioteca `nba_api` (game logs, estatísticas avançadas dos times, posições) mais o calendário oficial em `cdn.nba.com`.
 - **Free agents:** só dá para identificá-los com credenciais do ESPN (`--espn`). Sem isso, o agente avalia a NBA inteira e pede para o usuário conferir a disponibilidade. Há também a opção `--candidates` com uma lista manual.
 - **Execução automática:** descartada por ora (frágil e pode violar os termos do ESPN). O fluxo é semi-automático: o agente recomenda, o usuário aplica.
@@ -255,6 +255,7 @@ Arquivo `.env` (copiar de `env.example.txt`):
 
 ```
 ESPN_LEAGUE_ID=
+ESPN_TEAM_ID=
 ESPN_SWID={...}
 ESPN_S2=
 TELEGRAM_TOKEN=
@@ -268,10 +269,11 @@ EMAIL_TO=
 ```
 
 - `ESPN_LEAGUE_ID`: o `leagueId=` na URL da liga.
+- `ESPN_TEAM_ID`: o `teamId=` na URL do seu time. Com ele, o elenco é lido da API (dispensa `roster.csv`).
 - `ESPN_SWID` e `ESPN_S2`: cookies do navegador logado em espn.com (F12, Application ou Storage, Cookies). Expiram de tempos em tempos.
 - **Email:** `SMTP_HOST`/`SMTP_PORT` (587 com STARTTLS ou 465 com SSL), `SMTP_USER`, `SMTP_PASS` (no Gmail, app password), `EMAIL_FROM` (opcional, padrão `SMTP_USER`) e `EMAIL_TO` (vários destinatários separados por vírgula). Enviado por `smtplib` da stdlib, sem dependência nova.
 - A temporada 2026-27 corresponde a `year=2027` no `espn-api` (o código calcula sozinho).
-- O time do usuário é identificado automaticamente pela maior sobreposição de nomes com o `roster.csv` (mínimo de 3 jogadores).
+- O time do usuário é identificado por `ESPN_TEAM_ID` (ou, sem ele, pela maior sobreposição de nomes com o `roster.csv`, mínimo de 3 jogadores).
 
 ---
 
