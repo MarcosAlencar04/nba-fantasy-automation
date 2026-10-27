@@ -616,7 +616,7 @@ def fetch_espn(year, roster_names=None, fa_size=150, team_id=None):
             best, my_idx = ov, i
 
     my_status, my_players, my_name, my_team_id = {}, [], None, None
-    my_logo = my_owner = ""
+    my_logo, my_owner, my_record = "", "", (0, 0)
     if team_id is not None:
         hit = next((i for i, t in enumerate(teams) if t[2] == int(team_id)), None)
         if hit is None:
@@ -633,7 +633,9 @@ def fetch_espn(year, roster_names=None, fa_size=150, team_id=None):
         my_status = {norm_name(x["name"]): x["status"] for x in my_players}
 
     fa = [conv(p) for p in lg.free_agents(size=fa_size)]
-    return dict(fa=fa, teams=[(n, p, r) for n, p, *_, r in teams], my_status=my_status,
+    # (nome, jogadores, campanha) - ordem fixa consumida por build_universe_espn e run_analysis
+    rivals = [(n, p, r) for n, p, _tid, _logo, _owner, r in teams]
+    return dict(fa=fa, teams=rivals, my_status=my_status,
                 my_team=my_name, my_players=my_players, my_team_id=my_team_id,
                 my_logo=my_logo, my_owner=my_owner, my_record=my_record)
 
@@ -835,7 +837,10 @@ def build_universe_espn(roster_rows, fa_players=None, my_players=None, teams=Non
         seen.add(int(pid))
         universe.append(dict(espn_id=int(pid), name=name or "", team=team or ""))
 
-    for plist in [my_players or []] + [pl for _, pl in (teams or [])] + [fa_players or []]:
+    def players_of(entry):
+        return entry[1] if len(entry) > 1 else []
+
+    for plist in [my_players or []] + [players_of(t) for t in (teams or [])] + [fa_players or []]:
         for p in plist:
             add(p.get("espn_id"), p.get("name"), p.get("team", ""))
 
