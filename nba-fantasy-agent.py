@@ -35,6 +35,7 @@ import re
 import smtplib
 import sys
 import time
+import traceback
 import unicodedata
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
@@ -572,6 +573,21 @@ def elig_from_espn(p):
     return base or parse_pos(getattr(p, "position", ""))
 
 
+def owner_name(team):
+    """Nome do dono do time. `owners` do ESPN e uma lista de dicts de membro."""
+    owners = getattr(team, "owners", None) or []
+    if not owners:
+        return ""
+    first = owners[0]
+    if isinstance(first, dict):
+        for key in ("displayName", "name", "firstName", "nickname"):
+            val = first.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+        return ""
+    return str(first).strip()
+
+
 def fetch_espn(year, roster_names=None, fa_size=150, team_id=None):
     from espn_api.basketball import League
     lg = League(league_id=int(_env("ESPN_LEAGUE_ID")), year=year,
@@ -589,7 +605,7 @@ def fetch_espn(year, roster_names=None, fa_size=150, team_id=None):
     for i, t in enumerate(lg.teams):
         pl = [conv(p) for p in t.roster]
         teams.append((t.team_name, pl, getattr(t, "team_id", i + 1),
-                      getattr(t, "logo_url", "") or "", (getattr(t, "owners", None) or [""])[0]))
+                      getattr(t, "logo_url", "") or "", owner_name(t)))
         ov = len(mine & {norm_name(x["name"]) for x in pl})
         if ov > best:
             best, my_idx = ov, i
@@ -749,8 +765,12 @@ def fetch_logs_espn(season, players, workers=6):
                                       "TOV", "PTS"])
 
 
-def fetch_schedule_espn(days_back=1, days_ahead=15, workers=8):
-    """Calendario dos proximos dias pelo placar do ESPN (grade de jogos futuros)."""
+def fetch_schedule_espn(days_back=1, days_ahead=15, workers=4, retries=2):
+    """Calendario dos proximos dias pelo placar do ESPN (grade de jogos futuros).
+
+    Cada dia e buscado isoladamente; uma falha pontual nao pode zerar o calendario
+    inteiro, por isso cada dia tem retry e os que falharem sao avisados.
+    """
     from concurrent.futures import ThreadPoolExecutor
 
     today = datetime.now(ET).date()
@@ -758,23 +778,37 @@ def fetch_schedule_espn(days_back=1, days_ahead=15, workers=8):
                                                    for i in range(days_ahead)]
 
     def one(day):
-        games = []
-        try:
-            data = _espn_get(f"{ESPN_SCOREBOARD}?dates={day:%Y%m%d}")
-        except Exception:
-            return day, games
-        for ev in data.get("events") or []:
-            comp = (ev.get("competitions") or [{}])[0]
-            side = {c.get("homeAway"): (c.get("team") or {}).get("abbreviation")
-                    for c in comp.get("competitors") or []}
-            if side.get("home") and side.get("away"):
-                games.append((side["home"], side["away"]))
-        return day, games
+        last = None
+        for attempt in range(retries + 1):
+            try:
+                data = _espn_get(f"{ESPN_SCOREBOARD}?dates={day:%Y%m%d}", timeout=20)
+                games = []
+                for ev in data.get("events") or []:
+                    comp = (ev.get("competitions") or [{}])[0]
+                    side = {c.get("homeAway"): (c.get("team") or {}).get("abbreviation")
+                            for c in comp.get("competitors") or []}
+                    if side.get("home") and side.get("away"):
+                        games.append((side["home"], side["away"]))
+                return day, games, None
+            except Exception as ex:
+                last = ex
+                if attempt < retries:
+                    time.sleep(1.5 * (attempt + 1))
+        return day, [], last
 
     out = defaultdict(list)
+    failed = []
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        for day, games in ex.map(one, dates):
+        for day, games, err in ex.map(one, dates):
             out[day] = games
+            if err is not None:
+                failed.append(f"{day:%d/%m} ({err})")
+    if failed:
+        print(f"Aviso: placar do ESPN falhou para {len(failed)} dia(s): "
+              f"{'; '.join(failed[:3])}.", file=sys.stderr)
+    if not out.get(today):
+        print(f"Aviso: nenhum jogo encontrado para hoje ({today:%d/%m}) no placar do ESPN.",
+              file=sys.stderr)
     return dict(out)
 
 
@@ -839,6 +873,9 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
 
     done_today = set(cur[cur.GAME_DATE == today].PLAYER_ID.astype(int)) if len(cur) else set()
     ctx = Ctx(sched, tstats, today, done_today)
+    if sched and not sched.get(today):
+        notes.append(f"O calendario nao trouxe jogos para hoje ({today:%d/%m}). Se a NBA joga hoje, "
+                     "a consulta ao placar pode ter falhado: rode com --refresh.")
 
     profiles = build_profiles(cur, prev, opts.recent)
     idx = NameIndex(profiles)
@@ -1292,7 +1329,10 @@ def _stat(label, value, color=INK):
 
 def render_email_html(d):
     """Monta o corpo HTML do email a partir do digest da analise."""
-    esc = escape
+
+    def esc(value):
+        return escape("" if value is None else str(value))
+
     day = d.get("date") or datetime.now(ET).date()
     team = esc(d.get("team_name") or "Meu time")
     owner = esc(d.get("owner") or "")
@@ -1595,6 +1635,7 @@ def main():
         try:
             notify(summary, today, telegram=want_telegram, email=want_email, digest=digest)
         except Exception as ex:
+            traceback.print_exc()
             print(f"Aviso: falha ao notificar ({ex}); o relatorio foi salvo normalmente.", file=sys.stderr)
 
 
