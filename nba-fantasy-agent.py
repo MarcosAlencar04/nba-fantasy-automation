@@ -71,6 +71,8 @@ SLOT_ELIG = {
 }
 MAX_CENTERS = 4
 ADDS_LIMIT = 5
+IR_SLOTS = 3
+BENCH_SLOTS = 4
 TRADE_DEADLINE = date(2027, 3, 22)
 HORIZON_EXTRA_GAMES = 6      # peso do ganho "por jogo" (valor alem da semana) no ranking de adds
 PEN = 1e4                    # penalidade p/ celula inviavel na atribuicao
@@ -598,14 +600,17 @@ def fetch_espn(year, roster_names=None, fa_size=150, team_id=None):
                     status=getattr(p, "injuryStatus", "ACTIVE"),
                     owned=getattr(p, "percent_owned", None),
                     espn_id=getattr(p, "playerId", None),
-                    team=getattr(p, "proTeam", "") or "")
+                    team=getattr(p, "proTeam", "") or "",
+                    lineup_slot=getattr(p, "lineupSlot", "") or "",
+                    expected_return=getattr(p, "expected_return_date", None))
 
     mine = {norm_name(n) for n in (roster_names or [])}
     teams, best, my_idx = [], -1, None
     for i, t in enumerate(lg.teams):
         pl = [conv(p) for p in t.roster]
         teams.append((t.team_name, pl, getattr(t, "team_id", i + 1),
-                      getattr(t, "logo_url", "") or "", owner_name(t)))
+                      getattr(t, "logo_url", "") or "", owner_name(t),
+                      (getattr(t, "wins", 0), getattr(t, "losses", 0))))
         ov = len(mine & {norm_name(x["name"]) for x in pl})
         if ov > best:
             best, my_idx = ov, i
@@ -624,13 +629,13 @@ def fetch_espn(year, roster_names=None, fa_size=150, team_id=None):
         my_idx = None
 
     if my_idx is not None:
-        my_name, my_players, my_team_id, my_logo, my_owner = teams.pop(my_idx)
+        my_name, my_players, my_team_id, my_logo, my_owner, my_record = teams.pop(my_idx)
         my_status = {norm_name(x["name"]): x["status"] for x in my_players}
 
     fa = [conv(p) for p in lg.free_agents(size=fa_size)]
-    return dict(fa=fa, teams=[(n, p) for n, p, *_ in teams], my_status=my_status,
+    return dict(fa=fa, teams=[(n, p, r) for n, p, *_, r in teams], my_status=my_status,
                 my_team=my_name, my_players=my_players, my_team_id=my_team_id,
-                my_logo=my_logo, my_owner=my_owner)
+                my_logo=my_logo, my_owner=my_owner, my_record=my_record)
 
 
 def roster_rows_from_espn(players):
@@ -638,9 +643,13 @@ def roster_rows_from_espn(players):
     rows = []
     for p in players:
         status = norm_status(p.get("status"))
+        slot = (p.get("lineup_slot") or "").upper()
         rows.append(dict(name=p["name"],
                          pos="/".join(sorted(p.get("elig") or [])),
-                         status="" if status == "ACTIVE" else status))
+                         status="" if status == "ACTIVE" else status,
+                         in_ir=(slot == "IR"),
+                         lineup_slot=slot,
+                         expected_return=p.get("expected_return")))
     return rows
 
 
@@ -857,13 +866,157 @@ def nba_reachable(timeout=8):
 # --------------------------------------------------------------------------
 # Analise principal (funcao pura -> facilita testes)
 # --------------------------------------------------------------------------
+IR_ADVICE = {
+    "MOVER_PARA_IR": ("Mover para IR", "#dbeafe", "#1e40af"),
+    "ATIVAR": ("Ativar do IR", "#dcfce7", "#166534"),
+    "MANTER_NO_IR": ("Manter no IR", "#e5e7eb", "#4b5563"),
+    "MANTER": ("Manter", "#e5e7eb", "#4b5563"),
+    "IR_CHEIO": ("IR lotado", "#fef3c7", "#92400e"),
+    "DROPAR": ("Dropar", "#fee4e2", "#b42318"),
+    "OK": ("Sem acao", "#e5e7eb", "#4b5563"),
+}
+
+
+def ir_advice(roster, today, repl):
+    """Avalia cada jogador contra as 3 vagas de IR.
+
+    Regras praticas da liga (10 titulares + 4 banco + 3 IR):
+      * Quem esta fora por lesao e volta tarde deve ocupar IR, liberando vaga ativa.
+      * Quem esta no IR mas o ESPN nao marca lesao esta desperdicando a vaga.
+      * Day-to-day nao vale gastar IR (a vaga e escassa e ele pode jogar amanha).
+      * Se o IR esta cheio, o pior ocupante precisa sair para outro entrar.
+    """
+    ir_used = sum(1 for e in roster if e.get("in_ir"))
+    ir_free = max(0, IR_SLOTS - ir_used)
+    out = []
+
+    def days_until(ret):
+        if not ret:
+            return None
+        try:
+            return (ret - today).days
+        except TypeError:
+            return None
+
+    for e in sorted(roster, key=lambda x: -x["proj_fppg"]):
+        st = e["status"]
+        in_ir = e.get("in_ir", False)
+        du = days_until(e.get("expected_return"))
+        ret_txt = f"retorno previsto {e['expected_return']:%d/%m}" if du is not None else ""
+        advice, why = "OK", []
+
+        if in_ir:
+            if st in ("ACTIVE", "DTD"):
+                advice = "ATIVAR"
+                why.append("esta no IR mas o ESPN nao marca lesao")
+                if st == "DTD":
+                    why.append("day-to-day: confirme antes do jogo")
+                if e["dv"][today] > 0:
+                    why.append(f"renderia {e['dv'][today]:.0f} FP hoje")
+            else:
+                advice = "MANTER_NO_IR"
+                why.append("fora por lesao, IR e o lugar certo")
+                if du is not None:
+                    why += [ret_txt]
+                    if du > 14:
+                        why.append("ausencia longa: avalie trocar por FA")
+        elif st == "OUT":
+            if du is not None and 0 <= du <= 3:
+                advice = "MANTER"
+                why += [ret_txt, "ausencia curta: nao vale gastar IR"]
+            elif ir_free > 0:
+                advice = "MOVER_PARA_IR"
+                why.append("fora e ha vaga no IR (libera slot ativo)")
+                if du is not None:
+                    why.append(ret_txt)
+            elif e["proj_fppg"] < repl:
+                advice = "DROPAR"
+                why += ["fora, IR lotado e projecao abaixo do nivel de reposicao"]
+            else:
+                advice = "IR_CHEIO"
+                why += ["fora, mas as 3 vagas de IR estao ocupadas",
+                        "tire do IR quem ja voltou ou drope um deles"]
+        elif st == "DTD":
+            advice = "MANTER"
+            why.append("day-to-day: nao ocupe IR com duvida de 1 jogo")
+        else:
+            advice = "OK"
+            why.append(f"disponivel ({e['dv'][today]:.0f} FP hoje)")
+
+        out.append(dict(name=e["name"], team=e["team"], status=st, in_ir=in_ir,
+                        advice=advice, why=why, proj=e["proj_fppg"],
+                        value_today=e["dv"][today], expected_return=e.get("expected_return"),
+                        days_out=du))
+    return out, ir_used, ir_free
+
+
+def trade_risk(p, q, their_roster, their_record, gain):
+    """Estima (0-100) a chance de o outro dono aceitar a troca.
+
+    O ponto central: o ESPN mostra para ele uma media diferente da nossa projecao.
+    Se o que ele recebe parece pior do que o que ele entrega, a recusa e quase certa.
+    """
+    factors = []
+    their_view = p["perceived"] - q["perceived"]
+    # limita o peso do que ele ve no ESPN, senao uma media alta domina tudo
+    score = 50 + max(-40.0, min(35.0, their_view * 5.0))
+    if their_view >= 0:
+        factors.append("no ESPN ele ve a troca equilibrada ou favoravel")
+    else:
+        factors.append(f"no ESPN ele ve {their_view:+.1f} FP/jogo contra ele")
+
+    healthy = [x for x in their_roster if x["status"] not in ("OUT", "IR")]
+    need = sum(1 for pos in p["elig"]
+               if sum(1 for x in healthy if pos in x["elig"]) <= 2)
+    surplus = sum(1 for pos in q["elig"]
+                  if sum(1 for x in healthy if pos in x["elig"]) >= 5)
+    if need:
+        score += 8 * min(need, 2)
+        factors.append("ele precisa da posicao que recebe")
+    if surplus:
+        score += 6 * min(surplus, 2)
+        factors.append("voce pede uma posicao em que ele tem sobra")
+
+    if p["status"] in ("OUT", "IR"):
+        # ninguem aceita receber um jogador fora por lesao, por melhor que pareca
+        score = min(score - 40, 12)
+        factors.append("voce esta oferecendo um jogador fora por lesao")
+    elif p["status"] == "DTD":
+        score = min(score - 12, 55)
+        factors.append("voce esta oferecendo um jogador day-to-day")
+
+    wins, losses = their_record if their_record else (0, 0)
+    games = wins + losses
+    if games >= 10:
+        rate = wins / games
+        score -= (rate - 0.5) * 30
+        if rate >= 0.6:
+            factors.append(f"ele esta bem na temporada ({wins}-{losses}): resiste a mexer no time")
+        elif rate <= 0.4:
+            factors.append(f"ele esta mal ({wins}-{losses}): tende a aceitar mudancas")
+
+    score = int(max(2, min(97, round(score))))
+    reject = 100 - score
+    if reject <= 35:
+        label, color = "Baixo", ("#dcfce7", "#166534")
+    elif reject <= 60:
+        label, color = "Medio", ("#fef3c7", "#92400e")
+    else:
+        label, color = "Alto", ("#fee4e2", "#b42318")
+
+    veto = "alto" if gain > 8 else ("medio" if gain > 5 else "baixo")
+    return dict(accept=score, reject=reject, label=label, color=color,
+                factors=factors, veto=veto)
+
+
 def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
                  fa_players=None, other_teams=None, espn_status=None):
     notes = []
     summary = []
     L = []  # linhas do relatorio
-    digest = dict(date=today, lineup=[], bench=[], alerts=[], adds=[], trades=[],
-                  total=0.0, week="", adds_left=0, repl=0.0, empty_slots=0)
+    digest = dict(date=today, lineup=[], bench=[], alerts=[], adds=[], trades=[], ir=[],
+                  total=0.0, week="", adds_left=0, repl=0.0, empty_slots=0,
+                  ir_used=0, ir_free=IR_SLOTS)
 
     week_start = today - timedelta(days=today.weekday())
     week_end = week_start + timedelta(days=6)
@@ -880,10 +1033,12 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
     profiles = build_profiles(cur, prev, opts.recent)
     idx = NameIndex(profiles)
 
-    def mk(prof, elig, status):
+    def mk(prof, elig, status, in_ir=False, expected_return=None):
         e = dict(prof)
         e["elig"] = elig
         e["status"] = norm_status(status)
+        e["in_ir"] = bool(in_ir)
+        e["expected_return"] = expected_return
         e["tag"], e["why"] = form_tag(e, opts.recent)
         e["dv"] = {d: day_value(e, d, ctx) for d in days}
         return e
@@ -905,7 +1060,8 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
             notes.append(f"'{r['name']}' foi associado a '{profiles[pid]['name']}' (confira se esta certo).")
         elig = parse_pos(r["pos"]) or pos_of(pid)
         status = r["status"] or (espn_status or {}).get(norm_name(r["name"]), "")
-        roster.append(mk(profiles[pid], elig, status))
+        roster.append(mk(profiles[pid], elig, status, r.get("in_ir", False),
+                         r.get("expected_return")))
     if not roster:
         return "Nenhum jogador do roster foi reconhecido.", [], digest
     pool = {e["pid"]: e for e in roster}
@@ -951,7 +1107,7 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
           ""]
 
     # ========== 1) LINEUP DE HOJE ======================================
-    active_ids = [e["pid"] for e in roster if e["status"] != "IR"]
+    active_ids = [e["pid"] for e in roster if e["status"] != "IR" and not e.get("in_ir")]
     elig = [pool[i]["elig"] for i in active_ids]
     vals = [pool[i]["dv"][today] for i in active_ids]
     assign, total = optimize(elig, vals)
@@ -981,7 +1137,9 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
         pi = active_ids.index(e["pid"]) if e["pid"] in active_ids else None
         if pi is not None and pi in starters:
             continue
-        if e["status"] in ("IR", "OUT"):
+        if e.get("in_ir"):
+            why = "esta no IR (ative para escalar)"
+        elif e["status"] in ("IR", "OUT"):
             why = "lesionado/IR"
         elif not ctx.game(e["team"], today):
             why = "sem jogo hoje"
@@ -1007,10 +1165,37 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
         f"{LINEUP_SLOTS[sj]} {pool[active_ids[pi]]['name'].split()[-1]}" for sj, pi in assign))
     L.append("")
 
-    # ========== 2) SEMANA / FORMA ======================================
+    # ========== 2) IR E STATUS =========================================
+    ir_rows, ir_used, ir_free = ir_advice(roster, today, repl)
+    digest["ir"] = ir_rows
+    digest["ir_used"], digest["ir_free"] = ir_used, ir_free
+    L += ["## 2. IR e status do elenco",
+          f"IR em uso: **{ir_used}/{IR_SLOTS}** ({ir_free} vaga(s) livre(s)) | "
+          f"Banco: {BENCH_SLOTS} | Titulares: {len(LINEUP_SLOTS)}", ""]
+    pending = [r for r in ir_rows if r["advice"] not in ("OK", "MANTER_NO_IR", "MANTER")]
+    if pending:
+        for r in pending:
+            L.append(f"- **{r['name']}** ({r['team']}, {r['status']}): "
+                     f"**{IR_ADVICE[r['advice']][0]}** - " + "; ".join(r["why"]))
+            summary.append(f"IR: {IR_ADVICE[r['advice']][0]} {r['name']}")
+    else:
+        L.append("Nenhuma acao de IR pendente: elenco e IR coerentes com o status do ESPN.")
+    L.append("")
+    rows = []
+    for r in ir_rows:
+        rows.append((r["name"], r["team"], r["status"], "sim" if r["in_ir"] else "nao",
+                     f"{r['proj']:.1f}", f"{r['value_today']:.1f}",
+                     (f"{r['expected_return']:%d/%m}" if r["expected_return"] else "-"),
+                     IR_ADVICE[r["advice"]][0]))
+    L += md_table(["Jogador", "Time", "Status", "No IR", "Proj/jogo", "Valor hoje",
+                   "Retorno", "Acao"], rows)
+    L += ["", "Regras: fora por lesao e com retorno distante ocupa IR; day-to-day nao gasta vaga; "
+          "quem esta no IR sem lesao precisa ser ativado para voltar a pontuar.", ""]
+
+    # ========== 3) SEMANA / FORMA ======================================
     cw = cur[(cur.GAME_DATE >= week_start) & (cur.GAME_DATE <= today)] if len(cur) else cur
     wk = {k: g for k, g in cw.groupby("PLAYER_ID")} if len(cw) else {}
-    L += ["## 2. Semana do confronto e fase de cada jogador", ""]
+    L += ["## 3. Semana do confronto e fase de cada jogador", ""]
     rows, flags = [], []
     for e in sorted(roster, key=lambda x: -x["proj_fppg"]):
         g = wk.get(e["pid"])
@@ -1070,10 +1255,13 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
     L.append("")
 
     # ========== 3) ADD / DROP ==========================================
-    L += ["## 3. Contratar / dropar (free agents)", ""]
-    droppable = [e for e in roster if e["status"] != "IR"]
+    L += ["## 4. Contratar / dropar (free agents)", ""]
+    # Quem pode ir para o IR nao precisa ser dropado: o IR garante o jogador de graca.
+    parkable = {r["name"] for r in ir_rows if r["advice"] == "MOVER_PARA_IR"}
+    droppable = [e for e in roster
+                 if e["status"] != "IR" and not e.get("in_ir") and e["name"] not in parkable]
     n_centers = sum(1 for e in roster if "C" in e["elig"])
-    base_ids = [e["pid"] for e in droppable]
+    base_ids = [e["pid"] for e in roster if not e.get("in_ir")]
     base_week = week_value(base_ids, pool, days)
 
     def rank_pre(c):
@@ -1136,11 +1324,13 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
     L.append("")
 
     # ========== 4) TROCAS ==============================================
-    L += ["## 4. Trocas", ""]
+    L += ["## 5. Trocas", ""]
     sells = sorted((e for e in roster if e["tag"] == "VENDER_NA_ALTA"), key=lambda e: -e["delta_form"])
     if other_teams:
         trade_rows = []
-        for tname, plist in other_teams:
+        for entry in other_teams:
+            tname, plist = entry[0], entry[1]
+            their_record = entry[2] if len(entry) > 2 else (0, 0)
             tpool = []
             for x in plist:
                 pid, _ = idx.find(x["name"])
@@ -1154,12 +1344,16 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
                     if q["status"] in ("OUT", "IR"):
                         continue
                     gain = q["proj_fppg"] - p["proj_fppg"]
-                    if gain < 2.5 or p["perceived"] < q["perceived"] - 2.0:
+                    if gain < 2.5:
                         continue
                     ids = [i for i in base_ids if i != p["pid"]] + [q["pid"]]
                     wg = week_value(ids, pool, days) - base_week
-                    bonus = 0.25 * (p["perceived"] - q["perceived"])
-                    trade_rows.append(dict(team=tname, give=p, get=q, gain=gain, wg=wg, score=gain + bonus + 0.02 * wg))
+                    risk = trade_risk(p, q, tpool, their_record, gain)
+                    # trocas que o outro dono tende a recusar valem menos na ordenacao
+                    score = gain + 0.25 * (p["perceived"] - q["perceived"]) + 0.02 * wg
+                    score *= 0.55 + 0.45 * (risk["accept"] / 100)
+                    trade_rows.append(dict(team=tname, give=p, get=q, gain=gain, wg=wg,
+                                           risk=risk, score=score))
         trade_rows.sort(key=lambda r: -r["score"])
         out, per_team, used_g, used_r = [], defaultdict(int), set(), set()
         for r in trade_rows:
@@ -1171,24 +1365,45 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
             if len(out) >= 8:
                 break
         if not out:
-            L.append("Nenhuma troca 1x1 clara encontrada (ganho de projecao >= 2,5 FP/jogo sem parecer desvantajosa para o outro dono).")
+            L.append("Nenhuma troca 1x1 encontrada com ganho de projecao >= 2,5 FP/jogo.")
         else:
-            L.append("Troca 1x1 em que **voce ganha em projecao real** mas o outro dono enxerga valor igual ou maior "
-                     "(pelo que o ESPN mostra: media da temporada + ultimos 10 jogos).")
+            high = [r for r in out if r["risk"]["reject"] <= 45]
+            if not high:
+                L.append("Atencao: todas as trocas abaixo tem risco alto de recusa. "
+                         "Considere juntar mais valor (2x1) ou esperar uma fase melhor do jogador que voce oferece.")
+                L.append("")
+            L.append("Troca 1x1 em que **voce ganha em projecao real** e o outro dono ainda ve valor. "
+                     "A coluna **risco de recusa** estima a chance de ele aceitar: valor que ele percebe no ESPN, "
+                     "necessidade posicional dele, sua situacao na tabela e se voce oferece alguem lesionado.")
             L.append("")
             rows = []
             for r in out:
-                risk = " (risco de veto: muito desigual)" if r["gain"] > 8 else ""
-                digest["trades"].append(dict(team=r["team"], give=r["give"]["name"],
-                                             get=r["get"]["name"], give_fp=r["give"]["proj_fppg"],
-                                             get_fp=r["get"]["proj_fppg"], gain=r["gain"],
-                                             wg=r["wg"], risk=r["gain"] > 8))
-                rows.append((r["team"], r["give"]["name"], r["get"]["name"], f"{r['give']['proj_fppg']:.1f} -> {r['get']['proj_fppg']:.1f}",
-                             sgn(r["gain"]), f"{r['give']['perceived']:.1f} / {r['get']['perceived']:.1f}", sgn(r["wg"], 0) + risk))
-            L += md_table(["Time", "Voce da", "Voce recebe", "Proj/jogo", "Ganho/jogo", "Valor percebido (seu/dele)", "Ganho semana"], rows)
+                risk = r["risk"]
+                digest["trades"].append(dict(
+                    team=r["team"], give=r["give"]["name"], get=r["get"]["name"],
+                    give_fp=r["give"]["proj_fppg"], get_fp=r["get"]["proj_fppg"],
+                    gain=r["gain"], wg=r["wg"],
+                    accept=risk["accept"], reject=risk["reject"],
+                    reject_label=risk["label"],
+                    reject_bg=risk["color"][0], reject_fg=risk["color"][1],
+                    veto=risk["veto"], factors=risk["factors"]))
+                rows.append((r["team"], r["give"]["name"], r["get"]["name"],
+                             f"{r['give']['proj_fppg']:.1f} -> {r['get']['proj_fppg']:.1f}",
+                             sgn(r["gain"]), f"{r['give']['perceived']:.1f} / {r['get']['perceived']:.1f}",
+                             sgn(r["wg"], 0),
+                             f"{risk['label']} ({risk['reject']}%) · veto {risk['veto']}"))
+            L += md_table(["Time", "Voce da", "Voce recebe", "Proj/jogo", "Ganho/jogo",
+                           "Valor percebido (seu/dele)", "Ganho semana", "Risco de recusa"], rows)
+            L.append("")
+            L.append("**Por que cada risco:**")
+            for r in out[:5]:
+                L.append(f"- **{r['get']['name']}** de {r['team']} (recusa {r['risk']['reject']}%): "
+                         + "; ".join(r["risk"]["factors"]) + ".")
             for r in out[:3]:
-                summary.append(f"TROCA ({r['team']}): dar {r['give']['name']} por {r['get']['name']} ({r['gain']:+.1f}/jogo)")
-        L += ["", "A aceitacao depende do outro dono; a liga tem 2 dias de revisao e 4 votos vetam. Evite trocas absurdamente desiguais."]
+                summary.append(f"TROCA ({r['team']}): dar {r['give']['name']} por {r['get']['name']} "
+                               f"({r['gain']:+.1f}/jogo, recusa {r['risk']['label'].lower()})")
+        L += ["", "A aceitacao depende do outro dono; a liga tem 2 dias de revisao e 4 votos vetam. "
+              "Priorize as trocas com risco baixo: sao as que realmente acontecem."]
     else:
         L.append("Sem acesso aos elencos dos outros times (confira as credenciais do ESPN). Mesmo assim:")
         L.append("")
@@ -1441,6 +1656,31 @@ def render_email_html(d):
         rows.append(_section("Sinais da semana"))
         rows.append(f'<tr><td style="padding:0 28px">{"".join(cards)}</td></tr>')
 
+    # ---------- IR e status ----------
+    ir_rows = d.get("ir") or []
+    actions = [r for r in ir_rows if r.get("advice") not in (None, "OK", "MANTER_NO_IR", "MANTER")]
+    if actions:
+        sub = (f"IR {d.get('ir_used', 0)}/{IR_SLOTS} ocupado(s) · "
+               f"{d.get('ir_free', 0)} vaga(s) livre(s)")
+        cards = []
+        for r in actions:
+            label, bg, fg = IR_ADVICE.get(r["advice"], (r["advice"], "#f3f4f6", MUTED))
+            why = " · ".join(esc(w) for w in r["why"][:3])
+            ret = (f'<span style="color:{MUTED}"> · retorno {r["expected_return"]:%d/%m}</span>'
+                   if r.get("expected_return") else "")
+            cards.append(
+                f'<div style="border-left:3px solid {fg};background:#fafbfc;padding:11px 14px;'
+                f'border-radius:6px;margin-bottom:8px">'
+                f'<div style="font-size:13px"><span style="font-weight:700;color:{INK}">'
+                f'{esc(r["name"])}</span> <span style="color:{MUTED}">{esc(r["team"])} · '
+                f'{esc(r["status"])}</span>'
+                f'<span style="display:inline-block;margin-left:6px;padding:2px 8px;border-radius:999px;'
+                f'background:{bg};color:{fg};font-size:10px;font-weight:700;text-transform:uppercase;'
+                f'letter-spacing:.4px">{esc(label)}</span>{ret}</div>'
+                f'<div style="color:#4b5563;font-size:12px;margin-top:4px">{why}</div></div>')
+        rows.append(_section("IR e status", sub))
+        rows.append(f'<tr><td style="padding:0 28px">{"".join(cards)}</td></tr>')
+
     # ---------- add/drop ----------
     adds = d.get("adds") or []
     if adds:
@@ -1471,8 +1711,14 @@ def render_email_html(d):
     if trades:
         body = []
         for t in trades:
-            risk = ('<div style="color:#b45309;font-size:11px;margin-top:2px">'
-                    'risco de veto: troca muito desigual</div>') if t.get("risk") else ""
+            reject = t.get("reject", 50)
+            bg = t.get("reject_bg") or "#f3f4f6"
+            fg = t.get("reject_fg") or MUTED
+            veto = t.get("veto", "baixo")
+            veto_html = (f'<span style="color:#b45309;font-size:11px;margin-left:6px">'
+                         f'veto {esc(veto)}</span>' if veto != "baixo" else "")
+            factors = "".join(f'<div style="color:#6b7280;font-size:11px;margin-top:2px">· {esc(f)}</div>'
+                              for f in (t.get("factors") or [])[:3])
             body.append(
                 f'<tr><td style="padding:10px 0;border-bottom:1px solid #f1f3f5">'
                 f'<div style="color:{MUTED};font-size:11px;text-transform:uppercase;'
@@ -1484,8 +1730,15 @@ def render_email_html(d):
                 f'<div style="color:{MUTED};font-size:11px;margin-top:3px">'
                 f'{t["give_fp"]:.1f} → {t["get_fp"]:.1f} FP/jogo · '
                 f'<span style="color:#166534;font-weight:700">{t["gain"]:+.1f}/jogo</span></div>'
-                f'{risk}</td></tr>')
-        rows.append(_section("Trocas possiveis"))
+                f'<div style="margin-top:7px">'
+                f'<span style="display:inline-block;padding:3px 9px;border-radius:999px;'
+                f'background:{bg};color:{fg};font-size:10px;font-weight:700;'
+                f'text-transform:uppercase;letter-spacing:.4px">'
+                f'Risco de recusa: {esc(t.get("reject_label", "-"))} ({reject}%)</span>'
+                f'{veto_html}</div>'
+                f'{factors}</td></tr>')
+        rows.append(_section("Trocas possiveis",
+                             "Risco de recusa = chance estimada de o outro dono recusar"))
         rows.append(f'<tr><td style="padding:0 28px 8px 28px"><table role="presentation" width="100%" '
                     f'cellpadding="0" cellspacing="0" border="0">{"".join(body)}</table></td></tr>')
 

@@ -80,8 +80,8 @@ nao o relatorio completo. Se nao houver nada a sinalizar, nada e enviado.
 
 O **email** vai em HTML: cabecalho com o nome do time (e o logo, quando a liga tem um),
 faixa com FP projetado / adds restantes / nivel de reposicao, escalacao na ordem dos slots
-com foto do jogador, sinais da semana, add/drop e trocas. Versao em texto puro vai no
-mesmo email para clientes que nao renderizam HTML.
+com foto do jogador, **IR e status**, sinais da semana, add/drop e trocas com **risco de
+recusa**. Versao em texto puro vai no mesmo email para clientes que nao renderizam HTML.
 
 ## 6. Agendar de graca na nuvem (GitHub Actions)
 

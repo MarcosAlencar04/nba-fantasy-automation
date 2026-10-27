@@ -187,21 +187,49 @@ valor = projeção × fator_ambiente × prob_disponibilidade × (0,96 se back-to
 
 ### 5.4 Lineup
 
-Problema de atribuição jogador × slot que maximiza a soma dos valores. Elegibilidade: G = PG/SG, F = SF/PF, UTIL = qualquer um. Jogadores com valor 0 ficam no banco.
+Problema de atribuição jogador × slot que maximiza a soma dos valores. Elegibilidade: G = PG/SG, F = SF/PF, UTIL = qualquer um. Jogadores com valor 0 ficam no banco. Quem está no IR (slot do ESPN) ou com designação de IR fica fora do lineup.
 
-### 5.5 Add/drop
+### 5.5 IR e status
 
-- O candidato é avaliado contra **cada** jogador dropável do elenco (IR excluído). Mede-se a diferença no `week_value` (soma dos lineups ótimos dos dias restantes), o que já respeita posições e quantidade de jogos.
+A liga tem 3 vagas de IR. A seção avalia cada jogador contra elas usando `injuryStatus`, o slot atual (`lineupSlot`) e a data prevista de retorno (`expectedReturnDate`) que o ESPN fornece:
+
+| Ação | Quando |
+|---|---|
+| **Mover para IR** | status OUT, há vaga livre e o retorno não é iminente |
+| **Ativar do IR** | está no IR mas o ESPN não marca lesão (vaga desperdiçada) |
+| **Manter no IR** | OUT e o IR é o lugar certo |
+| **Manter** | day-to-day (não vale gastar vaga) ou OUT com retorno em até 3 dias |
+| **Dropar** | OUT, IR lotado e projeção abaixo do nível de reposição |
+| **IR lotado** | OUT mas as 3 vagas estão ocupadas: é preciso liberar uma |
+
+Jogador marcado para IR sai da lista de drops (não precisa ser cortado) e não entra no lineup até ser ativado.
+
+### 5.6 Add/drop
+
+- O candidato é avaliado contra **cada** jogador dropável do elenco (IR e quem vai para o IR ficam fora). Mede-se a diferença no `week_value` (soma dos lineups ótimos dos dias restantes), o que já respeita posições e quantidade de jogos.
 - **Score** = ganho na semana + 6 × ganho por jogo (o 6 é `HORIZON_EXTRA_GAMES`, que representa valor além da semana). Só entram sugestões com score ≥ 8.
 - Respeita o limite de 4 centers e o saldo de adds do matchup.
 - Se faltarem 2 dias ou menos na semana, o horizonte se estende até a semana seguinte.
 - **Nível de reposição:** 5º melhor free agent do ESPN, ou 24 FP/jogo se não houver lista (ajustável com `--replacement`).
 
-### 5.6 Trocas (com os elencos vindos do ESPN)
+### 5.7 Trocas e risco de recusa
 
-Troca 1x1 em que o usuário ganha pelo menos 2,5 FP/jogo de projeção real e o outro dono "percebe" valor igual ou maior. O valor percebido é `0,5 × média da temporada + 0,5 × média dos últimos 10 jogos`, aproximando o que o ESPN mostra. No máximo 2 sugestões por time e 8 no total; avisa risco de veto quando o ganho passa de 8 FP/jogo.
+Troca 1x1 em que o usuário ganha pelo menos 2,5 FP/jogo de projeção real. O valor percebido usado no cálculo é `0,5 × média da temporada + 0,5 × média dos últimos 10 jogos`, aproximando o que o ESPN mostra ao outro dono. No máximo 2 sugestões por time e 8 no total.
 
-### 5.7 Cache
+Cada sugestão recebe um **risco de recusa** (0–100%), calculado assim:
+
+| Fator | Efeito |
+|---|---|
+| Valor percebido que ele ganha | ± até 40 pontos (limitado, para uma média alta não dominar) |
+| Ele precisa da posição que recebe | +8 por posição carente (máx. 16) |
+| Você pede posição em que ele tem sobra | +6 por posição (máx. 12) |
+| Você oferece jogador OUT/IR | teto de 12% de aceite |
+| Você oferece jogador DTD | teto de 55% de aceite |
+| Campanha dele (se ≥ 10 jogos) | +15 pontos se estiver abaixo de 40% de vitórias, −15 acima de 60% |
+
+Rótulos: **baixo** (recusa ≤ 35%), **médio** (36–60%) e **alto** (> 60%). O risco também entra na ordenação, então trocas improváveis caem para o fim. O **risco de veto** é separado: alto quando o ganho passa de 8 FP/jogo, médio acima de 5.
+
+### 5.8 Cache
 
 Game log da temporada atual: 3 h. Temporada anterior: 7 dias. Calendário: 12 h. Estatísticas dos times: 6 h. Posições: 72 h. `--refresh` ignora.
 
