@@ -78,6 +78,11 @@ Email (SMTP): `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `EMAIL_FROM` e
 A mensagem e a mesma nos dois canais: o resumo do dia (lineup, vendas, adds e trocas),
 nao o relatorio completo. Se nao houver nada a sinalizar, nada e enviado.
 
+O **email** vai em HTML: cabecalho com o nome do time (e o logo, quando a liga tem um),
+faixa com FP projetado / adds restantes / nivel de reposicao, escalacao na ordem dos slots
+com foto do jogador, sinais da semana, add/drop e trocas. Versao em texto puro vai no
+mesmo email para clientes que nao renderizam HTML.
+
 ## 6. Agendar de graca na nuvem (GitHub Actions)
 
 Roda 2x por dia sem depender da sua maquina e sem custo:

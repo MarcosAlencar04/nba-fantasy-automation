@@ -39,6 +39,7 @@ import unicodedata
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from email.message import EmailMessage
+from html import escape
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -587,12 +588,14 @@ def fetch_espn(year, roster_names=None, fa_size=150, team_id=None):
     teams, best, my_idx = [], -1, None
     for i, t in enumerate(lg.teams):
         pl = [conv(p) for p in t.roster]
-        teams.append((t.team_name, pl, getattr(t, "team_id", i + 1)))
+        teams.append((t.team_name, pl, getattr(t, "team_id", i + 1),
+                      getattr(t, "logo_url", "") or "", (getattr(t, "owners", None) or [""])[0]))
         ov = len(mine & {norm_name(x["name"]) for x in pl})
         if ov > best:
             best, my_idx = ov, i
 
     my_status, my_players, my_name, my_team_id = {}, [], None, None
+    my_logo = my_owner = ""
     if team_id is not None:
         hit = next((i for i, t in enumerate(teams) if t[2] == int(team_id)), None)
         if hit is None:
@@ -605,12 +608,13 @@ def fetch_espn(year, roster_names=None, fa_size=150, team_id=None):
         my_idx = None
 
     if my_idx is not None:
-        my_name, my_players, my_team_id = teams.pop(my_idx)
+        my_name, my_players, my_team_id, my_logo, my_owner = teams.pop(my_idx)
         my_status = {norm_name(x["name"]): x["status"] for x in my_players}
 
     fa = [conv(p) for p in lg.free_agents(size=fa_size)]
-    return dict(fa=fa, teams=[(n, p) for n, p, _ in teams], my_status=my_status,
-                my_team=my_name, my_players=my_players, my_team_id=my_team_id)
+    return dict(fa=fa, teams=[(n, p) for n, p, *_ in teams], my_status=my_status,
+                my_team=my_name, my_players=my_players, my_team_id=my_team_id,
+                my_logo=my_logo, my_owner=my_owner)
 
 
 def roster_rows_from_espn(players):
@@ -824,6 +828,8 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
     notes = []
     summary = []
     L = []  # linhas do relatorio
+    digest = dict(date=today, lineup=[], bench=[], alerts=[], adds=[], trades=[],
+                  total=0.0, week="", adds_left=0, repl=0.0, empty_slots=0)
 
     week_start = today - timedelta(days=today.weekday())
     week_end = week_start + timedelta(days=6)
@@ -864,7 +870,7 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
         status = r["status"] or (espn_status or {}).get(norm_name(r["name"]), "")
         roster.append(mk(profiles[pid], elig, status))
     if not roster:
-        return "Nenhum jogador do roster foi reconhecido.", []
+        return "Nenhum jogador do roster foi reconhecido.", [], digest
     pool = {e["pid"]: e for e in roster}
     roster_ids = [e["pid"] for e in roster]
 
@@ -897,6 +903,9 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
 
     # ---- cabecalho ---------------------------------------------------
     adds_left = max(0, ADDS_LIMIT - opts.adds_used)
+    digest.update(week=f"{week_start:%d/%m} a {week_end:%d/%m}", adds_left=adds_left,
+                  repl=repl, adds_limit=ADDS_LIMIT,
+                  trade_days=(TRADE_DEADLINE - today).days)
     L += [f"# Relatorio NBA Fantasy - {today.strftime('%d/%m/%Y')} ({today.strftime('%A')})",
           f"Semana do confronto: {week_start.strftime('%d/%m')} a {week_end.strftime('%d/%m')} | "
           f"Adds restantes no matchup: **{adds_left}/{ADDS_LIMIT}** | "
@@ -911,12 +920,18 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
     assign, total = optimize(elig, vals)
     starters = {pi: sj for sj, pi in assign}
     L += ["## 1. Lineup otimo de hoje", f"Valor esperado total: **{total:.1f} FP**", ""]
+    digest["total"] = total
+    digest["empty_slots"] = n_empty = len(LINEUP_SLOTS) - len(assign)
     rows = []
     for sj, pi in assign:
         e = pool[active_ids[pi]]
         gm = ctx.game(e["team"], today)
         opp = f"{'vs' if gm[1] else '@'} {gm[0]}" if gm else "-"
         flag = " (DTD)" if e["status"] == "DTD" else ""
+        digest["lineup"].append(dict(
+            slot=LINEUP_SLOTS[sj], name=e["name"], pid=e["pid"], team=e["team"],
+            opp=opp, fp=vals[pi], minutes=e["proj_min"], recent=e["fp5"],
+            tag=e["tag"], status=e["status"]))
         rows.append((LINEUP_SLOTS[sj], e["name"] + flag, opp, f1(vals[pi]), f1(e["proj_min"], 0),
                      f1(e["fp5"]), e["tag"].replace("_", " ").title() if e["tag"] != "NEUTRO" else ""))
     L += md_table(["Slot", "Jogador", "Jogo", "FP esperado", "Min proj", "FP ult.%d" % opts.recent, "Fase"], rows)
@@ -937,6 +952,8 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
             why = "jogo de hoje ja terminou"
         else:
             why = f"banco (valor {e['dv'][today]:.1f} perde para os titulares)"
+        digest["bench"].append(dict(name=e["name"], team=e["team"], why=why,
+                                    status=e["status"]))
         L.append(f"- {e['name']} ({e['team']}): {why}")
     # backups para DTD
     for sj, pi in assign:
@@ -992,6 +1009,9 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
         lab = {"VENDER_NA_ALTA": "VENDER NA ALTA", "COMPRAR_NA_BAIXA": "COMPRAR NA BAIXA / SEGURAR",
                "PAPEL_ENCOLHENDO": "PAPEL ENCOLHENDO", "ALTA_SUSTENTAVEL": "Alta sustentavel"}[e["tag"]]
         conf = "" if e["conf"] >= 0.5 else " [amostra pequena: confianca baixa]"
+        digest["alerts"].append(dict(name=e["name"], team=e["team"], tag=e["tag"], label=lab,
+                                     why=e["why"], conf=e["conf"],
+                                     delta_form=e["delta_form"]))
         L.append(f"- **{e['name']}** - {lab}: " + "; ".join(e["why"]) + conf)
         if e["tag"] == "VENDER_NA_ALTA":
             summary.append(f"VENDER NA ALTA: {e['name']} ({'; '.join(e['why'])})")
@@ -1061,6 +1081,10 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
             a, d = r["add"], r["drop"]
             gj = sum(1 for x in days if ctx.game(a["team"], x))
             conf = "" if a["conf"] >= 0.5 else " *amostra pequena*"
+            digest["adds"].append(dict(add=a["name"], add_team=a["team"], drop=d["name"],
+                                       drop_team=d["team"], add_fp=a["proj_fppg"],
+                                       drop_fp=d["proj_fppg"], games=gj, wg=r["wg"],
+                                       pg=r["pg"], owned=a.get("owned"), tag=a["tag"]))
             rows.append((f"**{a['name']}** ({a['team']}, {'/'.join(sorted(a['elig'])) or '?'})", d["name"],
                          f"{a['proj_fppg']:.1f} vs {d['proj_fppg']:.1f}", gj, sgn(r["wg"], 0), sgn(r["pg"]),
                          (f"{a['owned']:.0f}%" if a.get("owned") else "-"),
@@ -1118,6 +1142,10 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
             rows = []
             for r in out:
                 risk = " (risco de veto: muito desigual)" if r["gain"] > 8 else ""
+                digest["trades"].append(dict(team=r["team"], give=r["give"]["name"],
+                                             get=r["get"]["name"], give_fp=r["give"]["proj_fppg"],
+                                             get_fp=r["get"]["proj_fppg"], gain=r["gain"],
+                                             wg=r["wg"], risk=r["gain"] > 8))
                 rows.append((r["team"], r["give"]["name"], r["get"]["name"], f"{r['give']['proj_fppg']:.1f} -> {r['get']['proj_fppg']:.1f}",
                              sgn(r["gain"]), f"{r['give']['perceived']:.1f} / {r['get']['perceived']:.1f}", sgn(r["wg"], 0) + risk))
             L += md_table(["Time", "Voce da", "Voce recebe", "Proj/jogo", "Ganho/jogo", "Valor percebido (seu/dele)", "Ganho semana"], rows)
@@ -1158,7 +1186,7 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
         notes.append("Status de lesao nao informado pelo ESPN; confira manualmente antes de agir.")
     if notes:
         L += ["## Avisos", ""] + [f"- {n}" for n in notes] + [""]
-    return "\n".join(L), summary
+    return "\n".join(L), summary, digest
 
 
 # --------------------------------------------------------------------------
@@ -1179,7 +1207,7 @@ def send_telegram(text):
     return r.ok
 
 
-def send_email(subject, text):
+def send_email(subject, text, html=None):
     host = _env("SMTP_HOST")
     user, pwd = _env("SMTP_USER"), _env("SMTP_PASS")
     to = [a.strip() for a in _env("EMAIL_TO").split(",") if a.strip()]
@@ -1204,6 +1232,8 @@ def send_email(subject, text):
         msg["From"] = _env("EMAIL_FROM") or user or to[0]
         msg["To"] = ", ".join(to)
         msg.set_content(text)
+        if html:
+            msg.add_alternative(html, subtype="html")
         if port == 465:
             with smtplib.SMTP_SSL(host, port, timeout=30) as s:
                 if user:
@@ -1222,14 +1252,235 @@ def send_email(subject, text):
         return False
 
 
-def notify(summary, today, telegram=False, email=False):
+# --------------------------------------------------------------------------
+# Email em HTML
+# --------------------------------------------------------------------------
+ORANGE = "#e8792b"
+INK = "#10141c"
+MUTED = "#6b7280"
+TAG_STYLE = {
+    "VENDER_NA_ALTA": ("Vender na alta", "#fee4e2", "#b42318"),
+    "COMPRAR_NA_BAIXA": ("Comprar na baixa", "#dcfce7", "#166534"),
+    "PAPEL_ENCOLHENDO": ("Papel encolhendo", "#fef3c7", "#92400e"),
+    "ALTA_SUSTENTAVEL": ("Alta sustentável", "#dbeafe", "#1e40af"),
+}
+
+
+def _pill(tag):
+    if tag not in TAG_STYLE:
+        return ""
+    label, bg, fg = TAG_STYLE[tag]
+    return (f'<span style="display:inline-block;padding:3px 9px;border-radius:999px;'
+            f'background:{bg};color:{fg};font-size:11px;font-weight:600;'
+            f'white-space:nowrap">{label}</span>')
+
+
+def _section(title, subtitle=""):
+    sub = (f'<div style="color:{MUTED};font-size:12px;margin-top:2px">{subtitle}</div>'
+           if subtitle else "")
+    return (f'<tr><td style="padding:26px 28px 10px 28px">'
+            f'<div style="color:{INK};font-size:15px;font-weight:700;letter-spacing:.2px">{title}</div>'
+            f'{sub}</td></tr>')
+
+
+def _stat(label, value, color=INK):
+    return (f'<td align="center" style="padding:14px 8px">'
+            f'<div style="color:{color};font-size:22px;font-weight:700;line-height:1.1">{value}</div>'
+            f'<div style="color:{MUTED};font-size:11px;text-transform:uppercase;'
+            f'letter-spacing:.6px;margin-top:4px">{label}</div></td>')
+
+
+def render_email_html(d):
+    """Monta o corpo HTML do email a partir do digest da analise."""
+    esc = escape
+    day = d.get("date") or datetime.now(ET).date()
+    team = esc(d.get("team_name") or "Meu time")
+    owner = esc(d.get("owner") or "")
+    logo = d.get("team_logo") or ""
+    photos = bool(d.get("photos"))
+
+    logo_html = ""
+    if logo:
+        logo_html = (f'<img src="{esc(logo)}" width="54" height="54" alt="" '
+                     f'style="display:block;border-radius:12px;border:0;background:#1c2230">')
+
+    meta = f"{day:%d/%m/%Y} · Semana {esc(d.get('week',''))}"
+    if owner:
+        meta += f" · {owner}"
+
+    rows = []
+
+    # ---------- cabecalho ----------
+    rows.append(
+        f'<tr><td style="background:{INK};padding:26px 28px">'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>'
+        f'<td width="54" valign="middle">{logo_html}</td>'
+        f'<td valign="middle" style="padding-left:14px">'
+        f'<div style="color:#8b93a7;font-size:11px;letter-spacing:2px;text-transform:uppercase">NBA Fantasy</div>'
+        f'<div style="color:#ffffff;font-size:21px;font-weight:700;margin-top:3px">{team}</div>'
+        f'<div style="color:#98a2b3;font-size:12px;margin-top:3px">{esc(meta)}</div>'
+        f'</td></tr></table></td></tr>')
+
+    # ---------- faixa de numeros ----------
+    rows.append(
+        f'<tr><td style="padding:6px 20px 0 20px"><table role="presentation" width="100%" '
+        f'cellpadding="0" cellspacing="0" border="0" style="border-bottom:1px solid #e5e7eb"><tr>'
+        + _stat("FP projetado hoje", f"{d.get('total', 0):.0f}", ORANGE)
+        + _stat("Adds restantes", f"{d.get('adds_left', 0)}/{d.get('adds_limit', 5)}")
+        + _stat("Nivel de reposicao", f"{d.get('repl', 0):.0f}")
+        + '</tr></table></td></tr>')
+
+    # ---------- lineup ----------
+    lineup = d.get("lineup") or []
+    if lineup:
+        rows.append(_section("Escalacao de hoje", "Slots na ordem da liga · FP esperado por jogo"))
+        body = []
+        for p in lineup:
+            photo = ""
+            if photos and p.get("pid"):
+                photo = (f'<img src="https://a.espncdn.com/i/headshots/nba/players/full/'
+                         f'{int(p["pid"])}.png" width="40" height="40" alt="" '
+                         f'style="display:block;border-radius:50%;border:2px solid #eef0f3">')
+            dtd = (f'<span style="color:#b45309;font-size:11px;font-weight:600"> · DTD</span>'
+                   if p.get("status") == "DTD" else "")
+            body.append(
+                f'<tr>'
+                f'<td width="52" style="padding:9px 0"><div style="background:{INK};color:#fff;'
+                f'border-radius:8px;padding:5px 0;text-align:center;font-size:11px;font-weight:700;'
+                f'letter-spacing:.5px">{esc(p["slot"])}</div></td>'
+                f'<td width="46" style="padding:9px 0 9px 8px">{photo}</td>'
+                f'<td style="padding:9px 0 9px 10px">'
+                f'<div style="color:{INK};font-size:14px;font-weight:600">{esc(p["name"])}{dtd}</div>'
+                f'<div style="color:{MUTED};font-size:11px;margin-top:2px">{esc(p["team"])} · '
+                f'{esc(p["opp"])} · {p["minutes"]:.0f} min</div></td>'
+                f'<td align="right" style="padding:9px 0;white-space:nowrap">'
+                f'<div style="color:{ORANGE};font-size:17px;font-weight:700">{p["fp"]:.1f}</div>'
+                f'<div style="margin-top:3px">{_pill(p.get("tag"))}</div></td>'
+                f'</tr>'
+                f'<tr><td colspan="4" style="border-bottom:1px solid #f1f3f5;font-size:0;line-height:0">&nbsp;</td></tr>')
+        rows.append(f'<tr><td style="padding:0 28px"><table role="presentation" width="100%" '
+                    f'cellpadding="0" cellspacing="0" border="0">{"".join(body)}</table></td></tr>')
+        if d.get("empty_slots"):
+            rows.append(
+                f'<tr><td style="padding:10px 28px 0 28px"><div style="background:#fff7ed;'
+                f'border-left:3px solid {ORANGE};padding:9px 12px;border-radius:6px;color:#9a3412;'
+                f'font-size:12px">{d["empty_slots"]} slot(s) sem jogador elegivel com jogo hoje.</div>'
+                f'</td></tr>')
+    else:
+        rows.append(_section("Escalacao de hoje"))
+        rows.append(f'<tr><td style="padding:0 28px"><div style="color:{MUTED};font-size:13px">'
+                    f'Nenhum jogador com jogo hoje.</div></td></tr>')
+
+    # ---------- banco ----------
+    bench = d.get("bench") or []
+    if bench:
+        items = "".join(
+            f'<div style="padding:6px 0;font-size:13px;color:#374151">'
+            f'<span style="font-weight:600;color:{INK}">{esc(b["name"])}</span>'
+            f'<span style="color:{MUTED}"> — {esc(b["why"])}</span></div>'
+            for b in bench[:12])
+        rows.append(_section("Fora do lineup"))
+        rows.append(f'<tr><td style="padding:0 28px">{items}</td></tr>')
+
+    # ---------- alertas ----------
+    alerts = d.get("alerts") or []
+    if alerts:
+        cards = []
+        for a in alerts:
+            _, bg, fg = TAG_STYLE.get(a["tag"], ("", "#f3f4f6", MUTED))
+            why = " · ".join(esc(w) for w in a["why"][:3])
+            cards.append(
+                f'<div style="border-left:3px solid {fg};background:#fafbfc;padding:11px 14px;'
+                f'border-radius:6px;margin-bottom:8px">'
+                f'<div style="font-size:13px"><span style="font-weight:700;color:{INK}">'
+                f'{esc(a["name"])}</span> <span style="color:{MUTED}">{esc(a["team"])}</span> '
+                f'<span style="display:inline-block;padding:2px 8px;border-radius:999px;'
+                f'background:{bg};color:{fg};font-size:10px;font-weight:700;text-transform:uppercase;'
+                f'letter-spacing:.4px">{esc(a["label"])}</span></div>'
+                f'<div style="color:#4b5563;font-size:12px;margin-top:4px">{why}</div></div>')
+        rows.append(_section("Sinais da semana"))
+        rows.append(f'<tr><td style="padding:0 28px">{"".join(cards)}</td></tr>')
+
+    # ---------- add/drop ----------
+    adds = d.get("adds") or []
+    if adds:
+        body = []
+        for a in adds:
+            owned = f'{a["owned"]:.0f}% no ESPN' if a.get("owned") else ""
+            body.append(
+                f'<tr><td style="padding:10px 0;border-bottom:1px solid #f1f3f5">'
+                f'<div style="font-size:13px;color:{INK}">'
+                f'<span style="color:#166534;font-weight:700">+ {esc(a["add"])}</span>'
+                f'<span style="color:{MUTED}"> ({esc(a["add_team"])}, {a["add_fp"]:.1f}/j)</span>'
+                f'</div>'
+                f'<div style="font-size:13px;color:{INK};margin-top:3px">'
+                f'<span style="color:#b42318;font-weight:700">− {esc(a["drop"])}</span>'
+                f'<span style="color:{MUTED}"> ({esc(a["drop_team"])}, {a["drop_fp"]:.1f}/j)</span>'
+                f'</div>'
+                f'<div style="color:{MUTED};font-size:11px;margin-top:4px">'
+                f'{a["games"]} jogos ate o fim · ganho na semana '
+                f'<span style="color:#166534;font-weight:700">{a["wg"]:+.0f} FP</span> '
+                f'({a["pg"]:+.1f}/jogo){(" · " + owned) if owned else ""}</div>'
+                f'</td></tr>')
+        rows.append(_section("Contratar / dropar", f"{d.get('adds_left', 0)} add(s) restante(s) neste matchup"))
+        rows.append(f'<tr><td style="padding:0 28px 8px 28px"><table role="presentation" width="100%" '
+                    f'cellpadding="0" cellspacing="0" border="0">{"".join(body)}</table></td></tr>')
+
+    # ---------- trocas ----------
+    trades = d.get("trades") or []
+    if trades:
+        body = []
+        for t in trades:
+            risk = ('<div style="color:#b45309;font-size:11px;margin-top:2px">'
+                    'risco de veto: troca muito desigual</div>') if t.get("risk") else ""
+            body.append(
+                f'<tr><td style="padding:10px 0;border-bottom:1px solid #f1f3f5">'
+                f'<div style="color:{MUTED};font-size:11px;text-transform:uppercase;'
+                f'letter-spacing:.5px">{esc(t["team"])}</div>'
+                f'<div style="font-size:13px;margin-top:3px">'
+                f'<span style="color:#b42318">dar {esc(t["give"])}</span>'
+                f'<span style="color:{MUTED}"> → </span>'
+                f'<span style="color:#166534;font-weight:600">receber {esc(t["get"])}</span></div>'
+                f'<div style="color:{MUTED};font-size:11px;margin-top:3px">'
+                f'{t["give_fp"]:.1f} → {t["get_fp"]:.1f} FP/jogo · '
+                f'<span style="color:#166534;font-weight:700">{t["gain"]:+.1f}/jogo</span></div>'
+                f'{risk}</td></tr>')
+        rows.append(_section("Trocas possiveis"))
+        rows.append(f'<tr><td style="padding:0 28px 8px 28px"><table role="presentation" width="100%" '
+                    f'cellpadding="0" cellspacing="0" border="0">{"".join(body)}</table></td></tr>')
+
+    # ---------- rodape ----------
+    rows.append(
+        f'<tr><td style="padding:22px 28px 26px 28px;border-top:1px solid #e5e7eb">'
+        f'<div style="color:#9ca3af;font-size:11px;line-height:1.6">'
+        f'Projecao estatistica, nao garantia. Confira lesoes e noticias antes de agir.<br>'
+        f'Prazo de trocas em {d.get("trade_days", 0)} dias · gerado pelo NBA Fantasy Agent'
+        f'</div></td></tr>')
+
+    return (
+        '<!DOCTYPE html><html><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1"></head>'
+        f'<body style="margin:0;padding:24px 12px;background:#eef1f5;'
+        f'font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,Helvetica,Arial,sans-serif">'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">'
+        f'<tr><td align="center">'
+        f'<table role="presentation" width="640" cellpadding="0" cellspacing="0" border="0" '
+        f'style="width:640px;max-width:100%;background:#ffffff;border-radius:14px;'
+        f'box-shadow:0 1px 3px rgba(16,20,28,.10);overflow:hidden">'
+        + "".join(rows) +
+        '</table></td></tr></table></body></html>'
+    )
+
+
+def notify(summary, today, telegram=False, email=False, digest=None):
     subject = f"NBA Fantasy {today.strftime('%d/%m')}"
     text = subject + "\n\n" + "\n".join(summary)
     results = {}
     if telegram:
         results["telegram"] = send_telegram(text)
     if email:
-        results["email"] = send_email(subject, text)
+        html = render_email_html(digest) if digest else None
+        results["email"] = send_email(subject, text, html=html)
     failed = [k for k, ok in results.items() if not ok]
     if failed:
         print(f"Notificacao: falhou em {', '.join(failed)} (o relatorio foi gerado normalmente).", file=sys.stderr)
@@ -1328,8 +1579,10 @@ def main():
     if not sched:
         print("Aviso: calendario vazio; o relatorio sai sem jogos do dia.", file=sys.stderr)
 
-    report, summary = run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
-                                   fa_players=fa, other_teams=teams, espn_status=status)
+    report, summary, digest = run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
+                                           fa_players=fa, other_teams=teams, espn_status=status)
+    digest.update(team_name=data.get("my_team"), team_logo=data.get("my_logo"),
+                  owner=data.get("my_owner"), photos=(source == "espn"))
     print(report)
     out = Path(opts.out_dir)
     out.mkdir(exist_ok=True)
@@ -1340,7 +1593,7 @@ def main():
     want_email = opts.email or opts.notify
     if summary and (want_telegram or want_email):
         try:
-            notify(summary, today, telegram=want_telegram, email=want_email)
+            notify(summary, today, telegram=want_telegram, email=want_email, digest=digest)
         except Exception as ex:
             print(f"Aviso: falha ao notificar ({ex}); o relatorio foi salvo normalmente.", file=sys.stderr)
 
