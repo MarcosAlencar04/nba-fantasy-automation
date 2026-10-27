@@ -248,11 +248,20 @@ def fetch_positions(season):
     return {int(a): b for a, b in zip(df["PERSON_ID"], df["POSITION"]) if isinstance(b, str)}
 
 
-def fetch_schedule(season=None):
+def fetch_schedule(season=None, source="nba"):
     """Retorna {date: [(home, away), ...]} so de jogos de temporada regular.
 
-    Tenta cdn.nba.com e, se falhar, o nba_api. Devolve {} (com aviso) se ambos falharem.
+    `source="espn"` usa o placar do ESPN dia a dia (mesmas siglas do gamelog).
+    Caso contrario tenta cdn.nba.com e depois o nba_api. Devolve {} (com aviso) se falhar.
     """
+    if source == "espn":
+        try:
+            games = fetch_schedule_espn()
+            if games:
+                return games
+            print("Aviso: placar do ESPN nao retornou jogos.", file=sys.stderr)
+        except Exception as ex:
+            print(f"Aviso: calendario via ESPN falhou ({ex}).", file=sys.stderr)
 
     def via_cdn(games):
         r = requests.get("https://cdn.nba.com/static/json/staticData/scheduleLeagueV2.json",
@@ -637,6 +646,7 @@ def roster_rows_from_espn(players):
 ESPN_GAMELOG = ("https://site.web.api.espn.com/apis/common/v3/sports/basketball/nba/"
                 "athletes/{pid}/gamelog?season={year}")
 ESPN_SEARCH = "https://site.web.api.espn.com/apis/search/v2"
+ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 # O gamelog do ESPN nao separa rebotes ofensivos; ~24% dos rebotes da NBA sao ofensivos.
 OREB_SHARE = 0.24
 
@@ -748,6 +758,35 @@ def fetch_logs_espn(season, players, workers=6):
                                       "GAME_DATE", "MIN", "FGM", "FGA", "FG3M", "FG3A",
                                       "FTM", "FTA", "OREB", "REB", "AST", "STL", "BLK",
                                       "TOV", "PTS"])
+
+
+def fetch_schedule_espn(days_back=1, days_ahead=15, workers=8):
+    """Calendario dos proximos dias pelo placar do ESPN (grade de jogos futuros)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    today = datetime.now(ET).date()
+    dates = [today - timedelta(days=days_back)] + [today + timedelta(days=i)
+                                                   for i in range(days_ahead)]
+
+    def one(day):
+        games = []
+        try:
+            data = _espn_get(f"{ESPN_SCOREBOARD}?dates={day:%Y%m%d}")
+        except Exception:
+            return day, games
+        for ev in data.get("events") or []:
+            comp = (ev.get("competitions") or [{}])[0]
+            side = {c.get("homeAway"): (c.get("team") or {}).get("abbreviation")
+                    for c in comp.get("competitors") or []}
+            if side.get("home") and side.get("away"):
+                games.append((side["home"], side["away"]))
+        return day, games
+
+    out = defaultdict(list)
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        for day, games in ex.map(one, dates):
+            out[day] = games
+    return dict(out)
 
 
 def build_universe_espn(roster_rows, fa_players=None, my_players=None, teams=None):
@@ -1331,7 +1370,8 @@ def main():
             print(f"Aviso: posicoes (PlayerIndex) indisponiveis ({ex}).", file=sys.stderr)
             positions = {}
 
-    sched = cached(f"sched_{season}", 12, lambda: fetch_schedule(season), opts.refresh)
+    sched = cached(f"sched_{season}_{source}", 6, lambda: fetch_schedule(season, source),
+                   opts.refresh)
     if not sched:
         print("Aviso: calendario vazio; o relatorio sai sem jogos do dia.", file=sys.stderr)
 
