@@ -220,22 +220,46 @@ Jogador marcado para IR sai da lista de drops (não precisa ser cortado) e não 
 - Se faltarem 2 dias ou menos na semana, o horizonte se estende até a semana seguinte.
 - **Nível de reposição:** 5º melhor free agent do ESPN, ou 24 FP/jogo se não houver lista (ajustável com `--replacement`).
 
-### 5.7 Trocas e risco de recusa
+### 5.7 Trocas avaliadas dos dois lados
 
-Troca 1x1 em que o usuário ganha pelo menos 2,5 FP/jogo de projeção real. O valor percebido usado no cálculo é `0,5 × média da temporada + 0,5 × média dos últimos 10 jogos`, aproximando o que o ESPN mostra ao outro dono. No máximo 2 sugestões por time e 8 no total.
+Troca 1x1 em que o usuário ganha pelo menos **2,5 FP/jogo** de projeção real. A avaliação é **bilateral**: cada candidato gera números para os dois lados, e só entra no relatório quem passa nos três filtros abaixo.
 
-Cada sugestão recebe um **risco de recusa** (0–100%), calculado assim:
+| Filtro | Regra |
+|---|---|
+| Favorece você | ganho real na semana > 0 |
+| Não é absurda para ele | perda dele ≤ 50% do valor que ele recebe na semana |
+| Chance real de aceite | recusa estimada ≤ 70% |
+
+O teto da perda dele é relativo (metade do que ele recebe) e não um valor fixo em FP: como trocas 1x1 somam zero, um teto absoluto descartaria justamente o "vender caro" — o caso em que você ganha muito porque o mercado supervaloriza quem você entrega.
+
+**O que é calculado para cada lado**
+
+| Métrica | Como sai |
+|---|---|
+| Agenda da semana | jogos do time de cada jogador na semana corrente (`ctx.game`) |
+| Pontos na semana | soma do valor por dia (`dv`) nos dias em que o time joga |
+| Cenário otimista | projeção + 70% da sorte negativa revertida + 0,25 × desvio padrão |
+| Cenário pessimista | projeção − 70% da sorte positiva revertida − 0,25 × desvio padrão |
+| Variação da média do elenco | média dos saudáveis antes e depois da troca, dos dois lados |
+| Risco de lesão | `baixo` / `medio` (DTD) / `alto` (OUT-IR, com dias até o retorno) |
+
+A projeção já remove a sorte de arremesso, então os cenários respondem duas perguntas: *e se ele voltar ao normal?* (otimista, para quem está em baixa) e *e se a fase boa acabar?* (pessimista, para quem está em alta).
+
+**Chance de aceite (lado dele, 0–100%)**
 
 | Fator | Efeito |
 |---|---|
-| Valor percebido que ele ganha | ± até 40 pontos (limitado, para uma média alta não dominar) |
+| Valor percebido que ele ganha | ± até 35 pontos |
+| Ganho/perda real dele na semana | ± até 25 pontos |
+| Agenda: recebe alguém com mais jogos | ± 3 por jogo (máx. 8) |
+| Média do elenco dele | ± 2,5 por FP/jogo (máx. ± 12) |
 | Ele precisa da posição que recebe | +8 por posição carente (máx. 16) |
 | Você pede posição em que ele tem sobra | +6 por posição (máx. 12) |
 | Você oferece jogador OUT/IR | teto de 12% de aceite |
 | Você oferece jogador DTD | teto de 55% de aceite |
-| Campanha dele (se ≥ 10 jogos) | +15 pontos se estiver abaixo de 40% de vitórias, −15 acima de 60% |
+| Campanha dele (se ≥ 10 jogos) | −26 × (taxa de vitórias − 0,5) |
 
-Rótulos: **baixo** (recusa ≤ 35%), **médio** (36–60%) e **alto** (> 60%). O risco também entra na ordenação, então trocas improváveis caem para o fim. O **risco de veto** é separado: alto quando o ganho passa de 8 FP/jogo, médio acima de 5.
+Rótulos: **Baixo** (recusa ≤ 35%), **Médio** (36–60%) e **Alto** (> 60%). O aceite entra na ordenação (`score *= 0,55 + 0,45 × aceite/100`), então trocas improváveis caem para o fim. O **risco de veto** é separado: alto quando o ganho passa de 8 FP/jogo, médio acima de 5. No máximo 2 sugestões por time e 8 no total.
 
 ### 5.8 Sinais da semana (comprar e vender)
 
@@ -247,6 +271,8 @@ A seção reúne os dois lados da operação, com regras diferentes por origem d
 ### 5.9 Free agents
 
 Só entram candidatos que estão **pontuando bem**: projeção ≥ nível de reposição, `conf ≥ 0,2` (amostra mínima) e média recente ≥ 85% do nível de reposição. Jogadores em `PAPEL_ENCOLHENDO` ou com amostra pequena são descartados antes da otimização de add/drop.
+
+A **agenda da semana** aparece ao lado de cada candidato: dois jogadores com projeção parecida valem coisas diferentes se um tem 4 jogos e o outro tem 2. A coluna `FP na semana` mostra o total real e, entre parênteses, os cenários otimista e pessimista — os mesmos três cenários usados na avaliação de trocas.
 
 ### 5.10 Agendamento
 
@@ -318,7 +344,7 @@ Pontos que podem falhar na primeira execução real e merecem atenção:
 - **Duração da lesão:** jogador OUT é tratado como fora em todos os dias da janela.
 - **Trava por horário de jogo:** o agente não verifica horários; só desconsidera o jogo de hoje se ele já aparece no game log.
 - **Waivers:** a recomendação é um claim (processa no dia seguinte, com ordem fixa), não uma contratação instantânea.
-- **Aceitação de trocas:** é heurística. Não considera necessidade posicional do outro time.
+- **Aceitação de trocas:** é heurística. Considera necessidade posicional do outro time, mas não o histórico dele em trocas anteriores nem o valor de jogadores fora do topo do elenco dele.
 - **Início de temporada:** com poucos jogos, os sinais de "vender na alta" e "comprar na baixa" são pouco confiáveis; o relatório marca amostra pequena.
 - **Limite de Centers:** conta jogadores com elegibilidade C (pode divergir de como o ESPN conta híbridos).
 - **IR:** os 3 slots de IR não estão modelados como regra; jogadores com status IR apenas ficam fora do lineup e da lista de drops.
@@ -368,7 +394,7 @@ EMAIL_TO=
 2. Validar a leitura de elenco, free agents e outros times.
 3. Rodar durante 1 a 2 semanas só como consulta, comparando as sugestões com o que acontece, antes de confiar nelas.
 4. Possíveis evoluções:
-   - Trocas 2x1 (consolidação) e consideração de necessidade posicional do outro time.
+   - Trocas 2x1 (consolidação).
    - Duas execuções por dia (manhã e uma hora antes do primeiro jogo, para rechecar lesões).
    - Leitura de horários de jogo para respeitar a trava individual.
    - Fonte de lesões independente do ESPN.
@@ -395,6 +421,9 @@ EMAIL_TO=
 | Disponibilidade DTD | 0,6 hoje, 0,85 depois | `avail_prob` |
 | Corte de add/drop | score ≥ 8 | `run_analysis` |
 | Corte de troca | ganho ≥ 2,5 FP/jogo | `run_analysis` |
+| Teto da perda dele na troca | 50% do valor semanal recebido | `run_analysis` |
+| Recusa máxima aceita | 70% | `run_analysis` |
+| Fator de cenário | 0,7 da sorte revertida ± 0,25 do desvio | `scenario_points` |
 
 ---
 

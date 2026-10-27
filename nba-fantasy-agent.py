@@ -995,21 +995,163 @@ def ir_advice(roster, today, repl):
     return out, ir_used, ir_free
 
 
-def trade_risk(p, q, their_roster, their_record, gain):
-    """Estima (0-100) a chance de o outro dono aceitar a troca.
+def _num(v, default=0.0):
+    """Float seguro: NaN/invalidos viram `default`."""
+    try:
+        f = float(v)
+        return default if math.isnan(f) else f
+    except (TypeError, ValueError):
+        return default
 
-    O ponto central: o ESPN mostra para ele uma media diferente da nossa projecao.
-    Se o que ele recebe parece pior do que o que ele entrega, a recusa e quase certa.
+
+def clamp(v, lo, hi):
+    return max(lo, min(hi, v))
+
+
+def games_left(team, days_list, ctx):
+    """Quantos jogos o time tem na janela informada."""
+    return sum(1 for d in days_list if ctx.game(team, d))
+
+
+def week_points(player, days_list):
+    """FP esperado do jogador na janela (usa o valor por dia ja calculado)."""
+    return sum(player["dv"].get(d, 0.0) for d in days_list)
+
+
+def scenario_points(player, days_list, mode):
+    """Pontos em tres cenarios: real, otimista e pessimista.
+
+    A projecao ja remove a sorte de arremesso, entao:
+      * otimista = sorte volta a favor + um quarto do desvio padrao;
+      * pessimista = sorte volta contra + um quarto do desvio padrao.
+    O cenario otimista responde "e se ele voltar ao normal?" para quem esta em
+    baixa; o pessimista responde "e se a fase boa acabar?" para quem esta em alta.
+    """
+    base_pts = week_points(player, days_list)
+    proj = _num(player["proj_fppg"])
+    if proj <= 0:
+        return base_pts, base_pts, base_pts
+
+    luck = _num(player["luck5"])
+    sd = abs(_num(player["fp_sd"], 10.0))
+    up_fppg = proj + max(0.0, -luck) * 0.7 + 0.25 * sd
+    down_fppg = max(0.0, proj - max(0.0, luck) * 0.7 - 0.25 * sd)
+
+    ratio_up, ratio_down = up_fppg / proj, down_fppg / proj
+    return base_pts, base_pts * ratio_up, base_pts * ratio_down
+
+
+def injury_level(p, today):
+    """('baixo'|'medio'|'alto', texto) para o risco de lesao do jogador."""
+    st = p["status"]
+    if st in ("OUT", "IR"):
+        ret = p.get("expected_return")
+        if ret:
+            try:
+                d = (ret - today).days
+                return "alto", f"fora por lesao (retorno em ~{max(0, d)}d)"
+            except TypeError:
+                pass
+        return "alto", "fora por lesao, sem previsao de retorno"
+    if st == "DTD":
+        return "medio", "day-to-day: pode ser cortado em cima da hora"
+    return "baixo", "saudavel"
+
+
+def roster_avg(players):
+    vals = [_num(p["proj_fppg"]) for p in players if p["status"] not in ("OUT", "IR")]
+    return sum(vals) / len(vals) if vals else 0.0
+
+
+def trade_eval(p, q, my_roster, their_roster, their_record, ctx, days_list,
+               today, repl):
+    """Avalia a troca dos dois lados.
+
+    p = jogador que eu entrego, q = jogador que eu recebo.
+    Retorna os numeros dos dois lados: agenda, pontos na semana, variacao da media
+    do elenco, cenarios otimista/pessimista, risco de lesao e a chance de recusa.
+    """
+    # ---- agenda: quantos jogos cada um tem na semana -------------------
+    g_out = games_left(p["team"], days_list, ctx)   # jogos do que eu entrego
+    g_in = games_left(q["team"], days_list, ctx)    # jogos do que eu recebo
+
+    # ---- pontos na semana (real, otimista, pessimista) ----------------
+    p_real, p_up, p_down = scenario_points(p, days_list, "real")
+    q_real, q_up, q_down = scenario_points(q, days_list, "real")
+
+    # para mim: entrou q, saiu p
+    mine = dict(
+        real=q_real - p_real, up=q_up - p_up, down=q_down - p_down,
+        games_in=g_in, games_out=g_out, delta_games=g_in - g_out,
+    )
+    # para ele: entrou p, saiu q
+    theirs = dict(
+        real=p_real - q_real, up=p_up - q_up, down=p_down - q_down,
+        games_in=g_out, games_out=g_in, delta_games=g_out - g_in,
+    )
+
+    # ---- variacao da media do elenco ----------------------------------
+    my_avg_before = roster_avg(my_roster)
+    my_avg_after = roster_avg([x for x in my_roster if x["pid"] != p["pid"]] + [q])
+    their_avg_before = roster_avg(their_roster)
+    their_avg_after = roster_avg(
+        [x for x in their_roster if x["pid"] != q["pid"]] + [p])
+    mine["avg_delta"] = my_avg_after - my_avg_before
+    theirs["avg_delta"] = their_avg_after - their_avg_before
+
+    # ---- risco de lesao -----------------------------------------------
+    mine["injury"], mine["injury_txt"] = injury_level(q, today)   # quem eu recebo
+    theirs["injury"], theirs["injury_txt"] = injury_level(p, today)  # quem ele recebe
+    mine["conf"] = _num(q["conf"], 0.5)
+    theirs["conf"] = _num(p["conf"], 0.5)
+
+    # ---- chance de aceite (lado dele) ---------------------------------
+    risk = trade_accept(p, q, their_roster, their_record, theirs)
+
+    return dict(mine=mine, theirs=theirs, risk=risk,
+                proj_gain=_num(q["proj_fppg"]) - _num(p["proj_fppg"]))
+
+
+def trade_accept(p, q, their_roster, their_record, theirs):
+    """Estima (0-100) a chance de o outro dono aceitar.
+
+    Combina o que ele ve no ESPN, o ganho real dele na semana, a variacao da media
+    do elenco, necessidade posicional, lesao e situacao na tabela.
     """
     factors = []
-    their_view = p["perceived"] - q["perceived"]
-    # limita o peso do que ele ve no ESPN, senao uma media alta domina tudo
-    score = 50 + max(-40.0, min(35.0, their_view * 5.0))
-    if their_view >= 0:
-        factors.append("no ESPN ele ve a troca equilibrada ou favoravel")
-    else:
-        factors.append(f"no ESPN ele ve {their_view:+.1f} FP/jogo contra ele")
 
+    # 1) valor que ele enxerga (media visivel no ESPN)
+    view = _num(p["perceived"]) - _num(q["perceived"])
+    score = 50 + clamp(view * 4.0, -35.0, 30.0)
+    if view >= 1:
+        factors.append(f"no ESPN ele ve {view:+.1f} FP/jogo a favor dele")
+    elif view <= -1:
+        factors.append(f"no ESPN ele ve {view:+.1f} FP/jogo contra ele")
+    else:
+        factors.append("no ESPN a troca parece equilibrada")
+
+    # 2) ganho real dele na semana (lineup otimizado)
+    wg = theirs["real"]
+    score += clamp(wg * 0.7, -25.0, 20.0)
+    if wg >= 5:
+        factors.append(f"ele ganha {wg:+.0f} FP na semana")
+    elif wg <= -5:
+        factors.append(f"ele perde {wg:+.0f} FP na semana")
+
+    # 3) agenda: mais jogos costuma agradar
+    if theirs["delta_games"] > 0:
+        score += min(8, theirs["delta_games"] * 3)
+        factors.append(f"recebe alguem com {theirs['delta_games']:+d} jogo(s) na semana")
+    elif theirs["delta_games"] < 0:
+        score -= min(8, -theirs["delta_games"] * 3)
+
+    # 4) media do elenco dele
+    ad = theirs["avg_delta"]
+    score += clamp(ad * 2.5, -12.0, 12.0)
+    if abs(ad) >= 0.5:
+        factors.append(f"media do elenco dele varia {ad:+.1f} FP/jogo")
+
+    # 5) necessidade posicional
     healthy = [x for x in their_roster if x["status"] not in ("OUT", "IR")]
     need = sum(1 for pos in p["elig"]
                if sum(1 for x in healthy if pos in x["elig"]) <= 2)
@@ -1022,26 +1164,30 @@ def trade_risk(p, q, their_roster, their_record, gain):
         score += 6 * min(surplus, 2)
         factors.append("voce pede uma posicao em que ele tem sobra")
 
-    if p["status"] in ("OUT", "IR"):
-        # ninguem aceita receber um jogador fora por lesao, por melhor que pareca
+    # 6) lesao de quem ele recebe: ninguem aceita jogador quebrado
+    if theirs["injury"] == "alto":
         score = min(score - 40, 12)
-        factors.append("voce esta oferecendo um jogador fora por lesao")
-    elif p["status"] == "DTD":
+        factors.append(f"voce esta oferecendo alguem lesionado ({theirs['injury_txt']})")
+    elif theirs["injury"] == "medio":
         score = min(score - 12, 55)
-        factors.append("voce esta oferecendo um jogador day-to-day")
+        factors.append("voce esta oferecendo alguem day-to-day")
 
-    wins, losses = their_record if their_record else (0, 0)
-    games = wins + losses
-    if games >= 10:
-        rate = wins / games
-        score -= (rate - 0.5) * 30
+    # 7) situacao na tabela
+    try:
+        wins, losses = their_record
+    except (TypeError, ValueError):
+        wins, losses = 0, 0
+    wins, losses = int(wins or 0), int(losses or 0)
+    if wins + losses >= 10:
+        rate = wins / (wins + losses)
+        score -= (rate - 0.5) * 26
         if rate >= 0.6:
-            factors.append(f"ele esta bem na temporada ({wins}-{losses}): resiste a mexer no time")
+            factors.append(f"ele esta bem ({wins}-{losses}): resiste a mexer no time")
         elif rate <= 0.4:
             factors.append(f"ele esta mal ({wins}-{losses}): tende a aceitar mudancas")
 
-    score = int(max(2, min(97, round(score))))
-    reject = 100 - score
+    accept = int(clamp(round(score), 2, 97))
+    reject = 100 - accept
     if reject <= 35:
         label, color = "Baixo", ("#10281c", "#4ade80")
     elif reject <= 60:
@@ -1049,8 +1195,9 @@ def trade_risk(p, q, their_roster, their_record, gain):
     else:
         label, color = "Alto", ("#2a1417", "#f87171")
 
+    gain = _num(q["proj_fppg"]) - _num(p["proj_fppg"])
     veto = "alto" if gain > 8 else ("medio" if gain > 5 else "baixo")
-    return dict(accept=score, reject=reject, label=label, color=color,
+    return dict(accept=accept, reject=reject, label=label, color=color,
                 factors=factors, veto=veto)
 
 
@@ -1497,6 +1644,11 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
         gms = sum(1 for d in days if ctx.game(c["team"], d))
         return c["proj_fppg"] * (1 + 0.12 * gms)
 
+    # A agenda da semana pesa: um FA com 4 jogos vale mais que outro com 2,
+    # mesmo tendo projecao parecida.
+    def week_games(c):
+        return games_left(c["team"], wk_days, ctx)
+
     pre = sorted(cands, key=lambda c: -c["proj_fppg"])[:50]
     pre += [c for c in sorted(cands, key=lambda c: -rank_pre(c))[:30] if c not in pre]
     results = []
@@ -1534,16 +1686,24 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
         for r in picks:
             a, d = r["add"], r["drop"]
             gj = sum(1 for x in days if ctx.game(a["team"], x))
+            wgames = week_games(a)
+            _, a_up, a_down = scenario_points(a, wk_days, "real")
+            a_real = week_points(a, wk_days)
             conf = "" if a["conf"] >= 0.5 else " *amostra pequena*"
             digest["adds"].append(dict(add=a["name"], add_team=a["team"], drop=d["name"],
                                        drop_team=d["team"], add_fp=a["proj_fppg"],
                                        drop_fp=d["proj_fppg"], games=gj, wg=r["wg"],
-                                       pg=r["pg"], owned=a.get("owned"), tag=a["tag"]))
+                                       pg=r["pg"], owned=a.get("owned"), tag=a["tag"],
+                                       week_games=wgames, week_points=a_real,
+                                       week_up=a_up, week_down=a_down))
             rows.append((f"**{a['name']}** ({a['team']}, {'/'.join(sorted(a['elig'])) or '?'})", d["name"],
-                         f"{a['proj_fppg']:.1f} vs {d['proj_fppg']:.1f}", gj, sgn(r["wg"], 0), sgn(r["pg"]),
+                         f"{a['proj_fppg']:.1f} vs {d['proj_fppg']:.1f}", wgames,
+                         f"{a_real:.0f} (+{a_up:.0f} / {a_down:+.0f})",
+                         sgn(r["wg"], 0), sgn(r["pg"]),
                          (f"{a['owned']:.0f}%" if a.get("owned") else "-"),
                          (a["tag"].replace("_", " ").title() if a["tag"] != "NEUTRO" else "-"), conf.strip() or "-"))
-        L += md_table(["Contratar", "Dropar", "Proj/jogo (add vs drop)", "Jogos ate o fim", "Ganho semana (FP)",
+        L += md_table(["Contratar", "Dropar", "Proj/jogo (add vs drop)", "Jogos sem.",
+                       "FP na semana (otim/pess)", "Ganho semana (FP)",
                        "Ganho/jogo", "% dono ESPN", "Fase", "Obs"], rows)
         for r in picks[:adds_left or 0]:
             summary.append(f"ADD {r['add']['name']} / DROP {r['drop']['name']} (ganho semana {r['wg']:+.0f} FP, {r['pg']:+.1f}/jogo)")
@@ -1566,23 +1726,47 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
                 if pid is None:
                     continue
                 if pid not in pool:
-                    pool[pid] = mk(profiles[pid], x.get("elig") or pos_of(pid), x.get("status", ""))
+                    pool[pid] = mk(profiles[pid], x.get("elig") or pos_of(pid),
+                                   x.get("status", ""))
                 tpool.append(pool[pid])
+            if not tpool:
+                continue
+            their_roster = tpool
+
             for p in droppable:
                 for q in tpool:
                     if q["status"] in ("OUT", "IR"):
                         continue
-                    gain = q["proj_fppg"] - p["proj_fppg"]
-                    if gain < 2.5:
+                    # ganho de projecao: precisa ser positivo para mim
+                    if _num(q["proj_fppg"]) - _num(p["proj_fppg"]) < 2.5:
                         continue
+
+                    ev = trade_eval(p, q, roster, their_roster, their_record,
+                                    ctx, wk_days, today, repl)
+
+                    # filtro do pedido: favoravel para mim e nao absurdamente
+                    # ruim para ele. A perda dele e medida contra o valor que
+                    # ele recebe na semana (trocas 1-por-1 somam zero, entao um
+                    # teto fixo em FP descartaria justamente o "vender caro").
+                    if ev["mine"]["real"] <= 0:
+                        continue
+                    q_week = max(1.0, week_points(q, wk_days))
+                    if ev["theirs"]["real"] < -0.5 * q_week:
+                        continue
+                    if ev["risk"]["reject"] > 70:
+                        continue
+
                     ids = [i for i in base_ids if i != p["pid"]] + [q["pid"]]
                     wg = week_value(ids, pool, days) - base_week
-                    risk = trade_risk(p, q, tpool, their_record, gain)
-                    # trocas que o outro dono tende a recusar valem menos na ordenacao
-                    score = gain + 0.25 * (p["perceived"] - q["perceived"]) + 0.02 * wg
-                    score *= 0.55 + 0.45 * (risk["accept"] / 100)
-                    trade_rows.append(dict(team=tname, give=p, get=q, gain=gain, wg=wg,
-                                           risk=risk, score=score))
+
+                    # ordena pelo ganho real na semana, penalizando recusa e
+                    # valorizando o cenario otimista
+                    score = (ev["mine"]["real"] * 0.6 + ev["mine"]["up"] * 0.25
+                             + wg * 0.15)
+                    score *= 0.55 + 0.45 * (ev["risk"]["accept"] / 100)
+                    trade_rows.append(dict(team=tname, give=p, get=q, wg=wg,
+                                           ev=ev, score=score))
+
         trade_rows.sort(key=lambda r: -r["score"])
         out, per_team, used_g, used_r = [], defaultdict(int), set(), set()
         for r in trade_rows:
@@ -1593,46 +1777,74 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
             used_g.add(r["give"]["pid"])
             if len(out) >= 8:
                 break
+
         if not out:
-            L.append("Nenhuma troca 1x1 encontrada com ganho de projecao >= 2,5 FP/jogo.")
+            L.append("Nenhuma troca passou nos filtros: precisa ser favoravel para voce "
+                     "(ganho real na semana > 0), nao custar ao outro dono mais da metade do "
+                     "valor que ele recebe na semana e ter recusa estimada <= 70%.")
         else:
-            high = [r for r in out if r["risk"]["reject"] <= 45]
-            if not high:
-                L.append("Atencao: todas as trocas abaixo tem risco alto de recusa. "
-                         "Considere juntar mais valor (2x1) ou esperar uma fase melhor do jogador que voce oferece.")
-                L.append("")
-            L.append("Troca 1x1 em que **voce ganha em projecao real** e o outro dono ainda ve valor. "
-                     "A coluna **risco de recusa** estima a chance de ele aceitar: valor que ele percebe no ESPN, "
-                     "necessidade posicional dele, sua situacao na tabela e se voce oferece alguem lesionado.")
+            L.append("Trocas avaliadas **dos dois lados**. Entram apenas as que te favorecem "
+                     "e que o outro dono tem chance real de aceitar. Cada linha mostra a agenda "
+                     "da semana, os pontos para cada lado, a variacao da media dos elencos, o "
+                     "cenario otimista e o risco de lesao.")
             L.append("")
             rows = []
             for r in out:
-                risk = r["risk"]
+                ev, risk = r["ev"], r["ev"]["risk"]
+                mine, theirs = ev["mine"], ev["theirs"]
+                risco_lesao = {"baixo": "-", "medio": "medio", "alto": "ALTO"}[mine["injury"]]
+                rows.append((
+                    r["team"], r["give"]["name"], r["get"]["name"],
+                    f"{_num(r['give']['proj_fppg']):.1f} -> {_num(r['get']['proj_fppg']):.1f}",
+                    f"{mine['games_out']} -> {mine['games_in']}",
+                    sgn(mine["real"], 0),
+                    sgn(theirs["real"], 0),
+                    f"{mine['avg_delta']:+.1f} / {theirs['avg_delta']:+.1f}",
+                    f"+{mine['up']:.0f} / {mine['down']:+.0f}",
+                    risco_lesao,
+                    f"{risk['label']} ({risk['reject']}%)"))
                 digest["trades"].append(dict(
                     team=r["team"], give=r["give"]["name"], get=r["get"]["name"],
-                    give_fp=r["give"]["proj_fppg"], get_fp=r["get"]["proj_fppg"],
-                    gain=r["gain"], wg=r["wg"],
+                    give_fp=_num(r["give"]["proj_fppg"]),
+                    get_fp=_num(r["get"]["proj_fppg"]),
+                    gain=ev["proj_gain"], wg=mine["real"],
+                    give_games=mine["games_out"], get_games=mine["games_in"],
+                    mine_real=mine["real"], theirs_real=theirs["real"],
+                    mine_up=mine["up"], mine_down=mine["down"],
+                    mine_avg=mine["avg_delta"], theirs_avg=theirs["avg_delta"],
+                    mine_injury=mine["injury"], mine_injury_txt=mine["injury_txt"],
+                    theirs_injury=theirs["injury"],
+                    theirs_injury_txt=theirs["injury_txt"],
                     accept=risk["accept"], reject=risk["reject"],
                     reject_label=risk["label"],
                     reject_bg=risk["color"][0], reject_fg=risk["color"][1],
                     veto=risk["veto"], factors=risk["factors"]))
-                rows.append((r["team"], r["give"]["name"], r["get"]["name"],
-                             f"{r['give']['proj_fppg']:.1f} -> {r['get']['proj_fppg']:.1f}",
-                             sgn(r["gain"]), f"{r['give']['perceived']:.1f} / {r['get']['perceived']:.1f}",
-                             sgn(r["wg"], 0),
-                             f"{risk['label']} ({risk['reject']}%) · veto {risk['veto']}"))
-            L += md_table(["Time", "Voce da", "Voce recebe", "Proj/jogo", "Ganho/jogo",
-                           "Valor percebido (seu/dele)", "Ganho semana", "Risco de recusa"], rows)
+            L += md_table(
+                ["Time", "Voce da", "Voce recebe", "Proj/jogo", "Jogos sem.",
+                 "Semana (voce)", "Semana (ele)", "Media elenco (voce/ele)",
+                 "Otimista/Pessimista", "Lesao", "Recusa"], rows)
             L.append("")
-            L.append("**Por que cada risco:**")
+            L.append("**Leitura de cada coluna:**")
+            L.append("- **Jogos sem.**: quantos jogos cada um tem na semana (entregue -> recebido).")
+            L.append("- **Semana (voce/ele)**: pontos ganhos na semana, com o lineup otimizado de cada lado.")
+            L.append("- **Media elenco**: quanto a media de projecao do elenco varia para cada lado.")
+            L.append("- **Otimista/Pessimista**: e se a sorte de arremesso voltar ao normal.")
+            L.append("")
+            L.append("**Por que cada recusa:**")
             for r in out[:5]:
-                L.append(f"- **{r['get']['name']}** de {r['team']} (recusa {r['risk']['reject']}%): "
-                         + "; ".join(r["risk"]["factors"]) + ".")
+                L.append(f"- **{r['get']['name']}** de {r['team']} "
+                         f"(recusa {r['ev']['risk']['reject']}%): "
+                         + "; ".join(r["ev"]["risk"]["factors"]) + ".")
             for r in out[:3]:
-                summary.append(f"TROCA ({r['team']}): dar {r['give']['name']} por {r['get']['name']} "
-                               f"({r['gain']:+.1f}/jogo, recusa {r['risk']['label'].lower()})")
-        L += ["", "A aceitacao depende do outro dono; a liga tem 2 dias de revisao e 4 votos vetam. "
-              "Priorize as trocas com risco baixo: sao as que realmente acontecem."]
+                ev = r["ev"]
+                summary.append(
+                    f"TROCA ({r['team']}): dar {r['give']['name']} por {r['get']['name']} "
+                    f"({ev['mine']['real']:+.0f} FP na semana, "
+                    f"recusa {ev['risk']['label'].lower()})")
+
+        L += ["", "A aceitacao depende do outro dono; a liga tem 2 dias de revisao e 4 votos "
+              "vetam. Priorize as trocas com recusa baixa e lesao baixa: sao as que "
+              "realmente acontecem."]
     else:
         L.append("Sem acesso aos elencos dos outros times (confira as credenciais do ESPN). Mesmo assim:")
         L.append("")
@@ -2061,6 +2273,10 @@ def render_email_html(d):
         body = []
         for a in adds:
             owned = f'{a["owned"]:.0f}% no ESPN' if a.get("owned") else ""
+            wg_txt = f'{a["week_games"]} jogo(s) esta semana' if a.get("week_games") is not None else ""
+            scen = (f' · <span style="color:{MUTED}">{a["week_up"]:.0f} no otimista / '
+                    f'{a["week_down"]:.0f} no pessimista</span>'
+                    if a.get("week_up") is not None else "")
             body.append(
                 f'<tr><td style="padding:10px 0;border-bottom:1px solid {LINE}">'
                 f'<div style="font-size:13px;color:{INK}">'
@@ -2072,9 +2288,9 @@ def render_email_html(d):
                 f'<span style="color:{MUTED}"> ({esc(a["drop_team"])}, {a["drop_fp"]:.1f}/j)</span>'
                 f'</div>'
                 f'<div style="color:{MUTED};font-size:11px;margin-top:4px">'
-                f'{a["games"]} jogos ate o fim · ganho na semana '
+                f'{wg_txt} · {a["games"]} ate o fim · ganho na semana '
                 f'<span style="color:{GREEN_FG};font-weight:700">{a["wg"]:+.0f} FP</span> '
-                f'({a["pg"]:+.1f}/jogo){(" · " + owned) if owned else ""}</div>'
+                f'({a["pg"]:+.1f}/jogo){scen}{(" · " + owned) if owned else ""}</div>'
                 f'</td></tr>')
         rows.append(_section("Contratar / dropar", f"{d.get('adds_left', 0)} add(s) restante(s) neste matchup"))
         rows.append(f'<tr><td style="padding:0 28px 8px 28px"><table role="presentation" width="100%" '
@@ -2093,6 +2309,54 @@ def render_email_html(d):
                          f'veto {esc(veto)}</span>' if veto != "baixo" else "")
             factors = "".join(f'<div style="color:{MUTED};font-size:11px;margin-top:2px">· {esc(f)}</div>'
                               for f in (t.get("factors") or [])[:3])
+
+            # Agenda: jogos na semana de cada lado
+            sched = ""
+            if t.get("give_games") is not None:
+                sched = (f'<div style="color:{MUTED};font-size:11px;margin-top:3px">'
+                         f'agenda: voce {t["give_games"]} jogo(s) · ele {t["get_games"]} jogo(s)</div>')
+
+            # Pontos na semana dos dois lados + cenarios
+            bilat = ""
+            if t.get("mine_real") is not None:
+                up = t.get("mine_up", t["mine_real"])
+                down = t.get("mine_down", t["mine_real"])
+                col_mine = GREEN_FG if t["mine_real"] >= 0 else RED_FG
+                col_theirs = GREEN_FG if t.get("theirs_real", 0) >= 0 else RED_FG
+                bilat = (
+                    f'<div style="font-size:11px;margin-top:5px;color:{MUTED}">'
+                    f'<span style="color:{INK}">sua semana</span> '
+                    f'<span style="color:{col_mine};font-weight:700">{t["mine_real"]:+.0f} FP</span>'
+                    f'<span style="color:{MUTED}"> (otim. {up:+.0f} / pess. {down:+.0f})</span>'
+                    f'<span style="color:{MUTED}"> · </span>'
+                    f'<span style="color:{INK}">a semana dele</span> '
+                    f'<span style="color:{col_theirs};font-weight:700">{t.get("theirs_real", 0):+.0f} FP</span></div>')
+
+            # Media do elenco
+            avg = ""
+            if t.get("mine_avg") is not None:
+                am = t["mine_avg"]
+                at = t.get("theirs_avg", 0)
+                avg = (f'<div style="color:{MUTED};font-size:11px;margin-top:2px">'
+                       f'media do elenco: '
+                       f'<span style="color:{GREEN_FG if am >= 0 else RED_FG};font-weight:700">{am:+.1f}</span>'
+                       f' para voce · '
+                       f'<span style="color:{GREEN_FG if at >= 0 else RED_FG};font-weight:700">{at:+.1f}</span>'
+                       f' para ele</div>')
+
+            # Lesao dos dois lados
+            inj = ""
+            inj_parts = []
+            if t.get("mine_injury") and t["mine_injury"] != "baixo":
+                inj_parts.append(f'voce recebe jogador com risco {"médio" if t["mine_injury"] == "medio" else "alto"}'
+                                 + (f' ({t["mine_injury_txt"]})' if t.get("mine_injury_txt") else ""))
+            if t.get("theirs_injury") and t["theirs_injury"] != "baixo":
+                inj_parts.append(f'ele recebe jogador com risco {"médio" if t["theirs_injury"] == "medio" else "alto"}'
+                                 + (f' ({t["theirs_injury_txt"]})' if t.get("theirs_injury_txt") else ""))
+            if inj_parts:
+                inj = (f'<div style="color:{AMBER_FG};font-size:11px;margin-top:2px">'
+                       f'lesao: {" · ".join(esc(x) for x in inj_parts)}</div>')
+
             body.append(
                 f'<tr><td style="padding:10px 0;border-bottom:1px solid {LINE}">'
                 f'<div style="color:{MUTED};font-size:11px;text-transform:uppercase;'
@@ -2104,15 +2368,16 @@ def render_email_html(d):
                 f'<div style="color:{MUTED};font-size:11px;margin-top:3px">'
                 f'{t["give_fp"]:.1f} → {t["get_fp"]:.1f} FP/jogo · '
                 f'<span style="color:{GREEN_FG};font-weight:700">{t["gain"]:+.1f}/jogo</span></div>'
+                f'{sched}{bilat}{avg}{inj}'
                 f'<div style="margin-top:7px">'
                 f'<span style="display:inline-block;padding:3px 9px;border-radius:999px;'
                 f'background:{bg};color:{fg};font-size:10px;font-weight:700;'
                 f'text-transform:uppercase;letter-spacing:.4px">'
-                f'Risco de recusa: {esc(t.get("reject_label", "-"))} ({reject}%)</span>'
+                f'Recusa estimada: {esc(t.get("reject_label", "-"))} ({reject}%)</span>'
                 f'{veto_html}</div>'
                 f'{factors}</td></tr>')
         rows.append(_section("Trocas possiveis",
-                             "Risco de recusa = chance estimada de o outro dono recusar"))
+                             "Avaliado dos dois lados: so entram trocas boas pra voce e nao absurdas pra ele"))
         rows.append(f'<tr><td style="padding:0 28px 8px 28px"><table role="presentation" width="100%" '
                     f'cellpadding="0" cellspacing="0" border="0">{"".join(body)}</table></td></tr>')
 
