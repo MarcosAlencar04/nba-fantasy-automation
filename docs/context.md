@@ -273,6 +273,18 @@ Rótulos: **Baixo** (recusa ≤ 35%), **Médio** (36–60%) e **Alto** (> 60%). 
 
 **Seleção final:** no máximo 2 sugestões por time, 3 por formato e 10 no total. A primeira passada garante **um exemplo de cada formato** disponível (o mesmo jogador pode reaparecer, para você comparar "esse cara em 1x1 ou em 2x1"); a segunda completa com as melhores restantes sem repetir jogador.
 
+**Apresentação no email.** Cada troca é um cartão (`render_email_html`, bloco `trocas`) com hierarquia fixa, em vez de linhas de texto empilhadas:
+
+| Faixa do cartão | Conteúdo |
+|---|---|
+| Cabeçalho | número da sugestão, time, chip do formato, chip de recusa e `veto`, `MELHOR` na primeira |
+| Dois painéis | `Voce entrega` em vermelho à esquerda, `Voce recebe` em verde à direita, com seta no meio |
+| Destaque | ganho em FP no lineup titular em 20px, cenários otimista/pessimista ao lado, ganho dele à direita |
+| Faixa de contexto | agenda, vagas, média do elenco e lesão dos dois lados, separados por `·` |
+| Rodapé | os 2 fatores mais decisivos, em uma linha |
+
+A borda esquerda do cartão é 3px na cor do risco de recusa (4px na melhor), então a lista pode ser varrida pela cor antes de ler qualquer número.
+
 ### 5.8 Sinais da semana (comprar e vender)
 
 A seção reúne os dois lados da operação, com regras diferentes por origem do jogador:

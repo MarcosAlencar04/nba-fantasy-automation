@@ -92,9 +92,12 @@ liga tem um), faixa com FP projetado / adds restantes / nivel de reposicao, esca
 dos slots com foto do jogador, **disputa por vaga** (quem entra e quem sai quando ha mais de 10
 elegiveis), **IR e status** (com ate 3 opcoes de drop para ativar), **sinais da semana** com
 alvos de compra nos elencos rivais, add/drop e trocas avaliadas **dos dois
-lados** em pacotes `1x1`, `2x1`, `1x2`, `2x2`, `3x1` e `1x3` (ganho na escalação
-titular, agenda da semana, media do elenco, cenarios otimista/pessimista e risco
-de lesao). Versao em texto
+lados** em pacotes `1x1`, `2x1`, `1x2`, `2x2`, `3x1` e `1x3`.
+
+Cada troca vira um **cartao** proprio: o time e o formato no topo com a chance de recusa, os
+dois pacotes lado a lado (painel vermelho com quem sai, verde com quem chega), o ganho em FP
+no lineup titular em destaque, e uma faixa unica com agenda, vagas, media do elenco e lesao.
+A melhor opcao vem marcada com `MELHOR`. Versao em texto
 puro vai no mesmo email para clientes que nao renderizam HTML.
 
 ## 6. Agendar de graca na nuvem (GitHub Actions)

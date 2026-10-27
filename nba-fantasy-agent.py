@@ -2532,120 +2532,152 @@ def render_email_html(d):
     # ---------- trocas ----------
     trades = d.get("trades") or []
     if trades:
-        body = []
-        for t in trades:
+        def chip(label, bg, fg, size=10):
+            return (f'<span style="display:inline-block;padding:2px 8px;border-radius:999px;'
+                    f'background:{bg};color:{fg};font-size:{size}px;font-weight:700;'
+                    f'white-space:nowrap">{label}</span>')
+
+        def side_panel(title, items, bg, fg, fallback):
+            """Painel de um lado da troca: o pacote que sai ou o que chega."""
+            if items:
+                parts = []
+                for p in items:
+                    fp = p.get("fp")
+                    tail = f" · {fp:.1f}/j" if isinstance(fp, (int, float)) else ""
+                    parts.append(
+                        f'<div style="margin-top:5px">'
+                        f'<div style="font-size:12px;color:{INK};line-height:1.3">'
+                        f'{esc(p.get("name"))}</div>'
+                        f'<div style="color:{MUTED};font-size:10px;margin-top:1px">'
+                        f'{esc(p.get("team"))}{tail}</div></div>')
+                inner = "".join(parts)
+            else:
+                inner = (f'<div style="font-size:12px;color:{INK};margin-top:5px;'
+                         f'line-height:1.3">{esc(fallback)}</div>')
+            return (f'<td width="45%" valign="top" style="background:{bg};border-radius:8px;'
+                    f'padding:9px 11px">'
+                    f'<div style="color:{fg};font-size:9px;font-weight:700;'
+                    f'letter-spacing:.8px;text-transform:uppercase">{title}</div>'
+                    f'{inner}</td>')
+
+        cards = []
+        for idx, t in enumerate(trades, 1):
             reject = t.get("reject", 50)
             bg = t.get("reject_bg") or GREY_BG
             fg = t.get("reject_fg") or GREY_FG
-            veto = t.get("veto", "baixo")
-            veto_html = (f'<span style="color:{AMBER_FG};font-size:11px;margin-left:6px">'
-                         f'veto {esc(veto)}</span>' if veto != "baixo" else "")
-            factors = "".join(f'<div style="color:{MUTED};font-size:11px;margin-top:2px">· {esc(f)}</div>'
-                              for f in (t.get("factors") or [])[:3])
-
-            # Agenda: jogos na semana de cada lado
-            sched = ""
-            if t.get("give_games") is not None:
-                sched = (f'<div style="color:{MUTED};font-size:11px;margin-top:3px">'
-                         f'agenda: voce {t["give_games"]} jogo(s) · ele {t["get_games"]} jogo(s)</div>')
-
-            # Vagas: 2x1 libera espaco, 1x2 exige abrir espaco
-            vagas = ""
-            if t.get("open_slots"):
-                n = t["open_slots"]
-                vagas = (f'<span style="color:{GREEN_FG if n > 0 else AMBER_FG};'
-                         f'font-size:11px;margin-left:6px">'
-                         f'{abs(n)} vaga(s) {"livre(s) para streamer" if n > 0 else "a abrir"}</span>')
-
-            # Pontos na semana dos dois lados + cenarios
-            bilat = ""
-            if t.get("mine_real") is not None:
-                up = t.get("mine_up", t["mine_real"])
-                down = t.get("mine_down", t["mine_real"])
-                col_mine = GREEN_FG if t["mine_real"] >= 0 else RED_FG
-                col_theirs = GREEN_FG if t.get("theirs_real", 0) >= 0 else RED_FG
-                bilat = (
-                    f'<div style="font-size:11px;margin-top:5px;color:{MUTED}">'
-                    f'<span style="color:{INK}">ganho no seu lineup</span> '
-                    f'<span style="color:{col_mine};font-weight:700">{t["mine_real"]:+.0f} FP</span>'
-                    f'<span style="color:{MUTED}"> (otim. {up:+.0f} / pess. {down:+.0f})</span>'
-                    f'<span style="color:{MUTED}"> · </span>'
-                    f'<span style="color:{INK}">no dele</span> '
-                    f'<span style="color:{col_theirs};font-weight:700">{t.get("theirs_real", 0):+.0f} FP</span>'
-                    f'{vagas}</div>')
-
-            # Media do elenco
-            avg = ""
-            if t.get("mine_avg") is not None:
-                am = t["mine_avg"]
-                at = t.get("theirs_avg", 0)
-                avg = (f'<div style="color:{MUTED};font-size:11px;margin-top:2px">'
-                       f'media do elenco: '
-                       f'<span style="color:{GREEN_FG if am >= 0 else RED_FG};font-weight:700">{am:+.1f}</span>'
-                       f' para voce · '
-                       f'<span style="color:{GREEN_FG if at >= 0 else RED_FG};font-weight:700">{at:+.1f}</span>'
-                       f' para ele</div>')
-
-            # Lesao dos dois lados
-            inj = ""
-            inj_parts = []
-            if t.get("mine_injury") and t["mine_injury"] != "baixo":
-                inj_parts.append(f'voce recebe jogador com risco {"médio" if t["mine_injury"] == "medio" else "alto"}'
-                                 + (f' ({t["mine_injury_txt"]})' if t.get("mine_injury_txt") else ""))
-            if t.get("theirs_injury") and t["theirs_injury"] != "baixo":
-                inj_parts.append(f'ele recebe jogador com risco {"médio" if t["theirs_injury"] == "medio" else "alto"}'
-                                 + (f' ({t["theirs_injury_txt"]})' if t.get("theirs_injury_txt") else ""))
-            if inj_parts:
-                inj = (f'<div style="color:{AMBER_FG};font-size:11px;margin-top:2px">'
-                       f'lesao: {" · ".join(esc(x) for x in inj_parts)}</div>')
-
-            # Formato do pacote (2x1, 1x2, ...) e detalhe por jogador
+            mine_gain = t.get("mine_real") or 0
+            their_gain = t.get("theirs_real") or 0
             shape = t.get("shape") or ""
-            shape_html = (f'<span style="display:inline-block;margin-left:6px;padding:1px 7px;'
-                          f'border-radius:6px;background:{SOFT};color:{MUTED};font-size:10px;'
-                          f'font-weight:700;letter-spacing:.4px">{esc(shape)}</span>'
+
+            # ---- cabecalho: posicao, time, formato e chance de aceite
+            shape_html = (f'<span style="display:inline-block;margin-left:7px;padding:1px 7px;'
+                          f'border-radius:5px;background:{SOFT};color:{BLUE_FG};font-size:10px;'
+                          f'font-weight:700;letter-spacing:.3px">{esc(shape)}</span>'
                           if shape else "")
+            veto_chip = (f'<span style="display:inline-block;margin-left:5px;'
+                         f'color:{AMBER_FG};font-size:10px;font-weight:600">veto {esc(t.get("veto"))}</span>'
+                         if t.get("veto") and t["veto"] != "baixo" else "")
+            best_chip = (f'<span style="display:inline-block;margin-left:7px;padding:1px 7px;'
+                         f'border-radius:5px;background:{GREEN_BG};color:{GREEN_FG};font-size:9px;'
+                         f'font-weight:700;letter-spacing:.4px">MELHOR</span>'
+                         if idx == 1 and len(trades) > 1 else "")
+            head = (
+                f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+                f'border="0"><tr>'
+                f'<td valign="middle">'
+                f'<span style="display:inline-block;min-width:19px;padding:2px 0;'
+                f'border-radius:5px;background:{SOFT};color:{MUTED};font-size:10px;'
+                f'font-weight:700;text-align:center">{idx}</span>'
+                f'<span style="color:{INK};font-size:13px;font-weight:700;margin-left:8px">'
+                f'{esc(t["team"])}</span>{shape_html}{best_chip}</td>'
+                f'<td align="right" valign="middle" style="white-space:nowrap">'
+                f'{chip(f"recusa {t.get('reject_label', '-')} ({reject}%)", bg, fg)}'
+                f'{veto_chip}</td></tr></table>')
 
-            def side(items, color):
-                if not items:
-                    return ""
-                if len(items) == 1:
-                    p = items[0]
-                    return (f'<span style="color:{color}">{esc(p["name"])}</span>'
-                            f'<span style="color:{MUTED}"> ({esc(p["team"])}, '
-                            f'{p["fp"]:.1f}/j)</span>')
-                return "".join(
-                    f'<div style="color:{color};font-size:12px;margin-top:2px">· '
-                    f'{esc(p["name"])}'
-                    f'<span style="color:{MUTED}"> ({esc(p["team"])}, {p["fp"]:.1f}/j)</span></div>'
-                    for p in items)
+            # ---- os dois lados, lado a lado
+            swap = (
+                f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+                f'border="0" style="margin-top:9px"><tr>'
+                f'{side_panel("Voce entrega", t.get("give_list"), RED_BG, RED_FG, t.get("give", ""))}'
+                f'<td width="10%" align="center" valign="middle" '
+                f'style="color:{MUTED};font-size:15px">&#8594;</td>'
+                f'{side_panel("Voce recebe", t.get("get_list"), GREEN_BG, GREEN_FG, t.get("get", ""))}'
+                f'</tr></table>')
 
-            give_html = side(t.get("give_list"), RED_FG) or f'<span style="color:{RED_FG}">{esc(t["give"])}</span>'
-            get_html = side(t.get("get_list"), GREEN_FG) or f'<span style="color:{GREEN_FG}">{esc(t["get"])}</span>'
+            # ---- metrica principal: ganho no lineup titular
+            cenarios = ""
+            if isinstance(t.get("mine_up"), (int, float)):
+                cenarios = (f'<span style="color:{MUTED};font-size:10px"> · cenarios '
+                            f'<span style="color:{GREEN_FG}">{t["mine_up"]:+.0f}</span>'
+                            f'<span style="color:{MUTED}">/</span>'
+                            f'<span style="color:{AMBER_FG}">{t.get("mine_down", 0):+.0f}</span>'
+                            f'</span>')
+            hero = (
+                f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+                f'border="0" style="margin-top:10px"><tr>'
+                f'<td valign="bottom" style="line-height:1.2">'
+                f'<span style="color:{GREEN_FG if mine_gain >= 0 else RED_FG};font-size:20px;'
+                f'font-weight:700">{mine_gain:+.0f}</span>'
+                f'<span style="color:{MUTED};font-size:11px"> FP no seu lineup</span>'
+                f'{cenarios}</td>'
+                f'<td align="right" valign="bottom" style="white-space:nowrap">'
+                f'<span style="color:{MUTED};font-size:10px">no dele </span>'
+                f'<span style="color:{GREEN_FG if their_gain >= 0 else RED_FG};font-size:13px;'
+                f'font-weight:700">{their_gain:+.0f}</span></td></tr></table>')
 
-            body.append(
-                f'<tr><td style="padding:10px 0;border-bottom:1px solid {LINE}">'
-                f'<div style="color:{MUTED};font-size:11px;text-transform:uppercase;'
-                f'letter-spacing:.5px">{esc(t["team"])}{shape_html}</div>'
-                f'<div style="font-size:13px;margin-top:3px">'
-                f'<span style="color:{MUTED}">dar</span> {give_html}</div>'
-                f'<div style="font-size:13px;margin-top:3px;font-weight:600">'
-                f'<span style="color:{MUTED};font-weight:400">receber</span> {get_html}</div>'
-                f'<div style="color:{MUTED};font-size:11px;margin-top:3px">'
-                f'{t["give_fp"]:.1f} → {t["get_fp"]:.1f} FP/jogo · '
-                f'<span style="color:{GREEN_FG};font-weight:700">{t["gain"]:+.1f}/jogo</span></div>'
-                f'{sched}{bilat}{avg}{inj}'
-                f'<div style="margin-top:7px">'
-                f'<span style="display:inline-block;padding:3px 9px;border-radius:999px;'
-                f'background:{bg};color:{fg};font-size:10px;font-weight:700;'
-                f'text-transform:uppercase;letter-spacing:.4px">'
-                f'Recusa estimada: {esc(t.get("reject_label", "-"))} ({reject}%)</span>'
-                f'{veto_html}</div>'
-                f'{factors}</td></tr>')
+            # ---- faixa de contexto, tudo numa linha so
+            meta = []
+            if t.get("give_games") is not None and t.get("get_games") is not None:
+                meta.append(f'agenda <span style="color:{INK}">{t["give_games"]}'
+                            f'&#8594;{t["get_games"]}</span>')
+            slots = t.get("open_slots")
+            if slots:
+                meta.append(f'<span style="color:{GREEN_FG if slots > 0 else AMBER_FG}">'
+                            f'{slots:+d} vaga(s)</span>')
+            if isinstance(t.get("mine_avg"), (int, float)):
+                am = t["mine_avg"]
+                at = t.get("theirs_avg") or 0
+                meta.append(f'media <span style="color:{GREEN_FG if am >= 0 else RED_FG}">'
+                            f'{am:+.1f}</span><span style="color:{MUTED}">/</span>'
+                            f'<span style="color:{GREEN_FG if at >= 0 else RED_FG}">'
+                            f'{at:+.1f}</span>')
+            my_inj = t.get("mine_injury")
+            if my_inj and my_inj != "baixo":
+                meta.append(f'<span style="color:{AMBER_FG}">lesao no que voce recebe '
+                            f'({"medio" if my_inj == "medio" else "alto"})</span>')
+            their_inj = t.get("theirs_injury")
+            if their_inj and their_inj != "baixo":
+                meta.append(f'<span style="color:{BLUE_FG}">lesao no que ele recebe '
+                            f'({"medio" if their_inj == "medio" else "alto"})</span>')
+            meta_html = ""
+            if meta:
+                meta_html = (f'<div style="color:{MUTED};font-size:10px;margin-top:7px;'
+                             f'line-height:1.5">'
+                             + f' <span style="color:{MUTED}">·</span> '.join(meta)
+                             + '</div>')
+
+            # ---- uma linha de justificativa (o fator mais decisivo primeiro)
+            top = (t.get("factors") or [])[:2]
+            fac = ""
+            if top:
+                fac = (f'<div style="color:{MUTED};font-size:10px;margin-top:5px;'
+                       f'line-height:1.45">&#8250; {esc(" · ".join(top))}</div>')
+
+            cards.append(
+                f'<div style="border-left:{4 if idx == 1 and len(trades) > 1 else 3}px solid {fg};'
+                f'background:{SOFT};border-radius:8px;padding:12px 14px;margin-bottom:10px">'
+                f'{head}{swap}{hero}{meta_html}{fac}</div>')
+
+        best = max((t.get("mine_real") or 0) for t in trades)
         rows.append(_section("Trocas possiveis",
-                             "Avaliado dos dois lados: so entram trocas boas pra voce e nao absurdas pra ele"))
-        rows.append(f'<tr><td style="padding:0 28px 8px 28px"><table role="presentation" width="100%" '
-                    f'cellpadding="0" cellspacing="0" border="0">{"".join(body)}</table></td></tr>')
+                             f"{len(trades)} opcao(oes) · melhor ganho +{best:.0f} FP no "
+                             f"lineup titular da semana"))
+        rows.append(f'<tr><td style="padding:0 28px">{"".join(cards)}'
+                    f'<div style="color:{MUTED};font-size:10px;line-height:1.5;'
+                    f'padding:2px 0 4px 0">'
+                    f'Ganho = diferenca na <b>escalacao titular</b> da semana (banco nao '
+                    f'pontua). Vaga + = espaco livre no elenco depois da troca.</div>'
+                    f'</td></tr>')
 
     # ---------- rodape ----------
     footer = ("Projecao estatistica, nao garantia. Confirme o status dos jogadores no app "
