@@ -72,9 +72,17 @@ python nba-fantasy-agent.py --notify     # os dois
 
 Telegram: `TELEGRAM_TOKEN` e `TELEGRAM_CHAT_ID` (crie o bot com o `@BotFather`).
 
-Email (SMTP): `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `EMAIL_FROM` e `EMAIL_TO`
-(destinatarios separados por virgula). No Gmail, use `smtp.gmail.com`, porta 587 e uma
-**app password** gerada na conta Google - a senha normal nao funciona. A porta 465 usa SSL.
+Email (SMTP): `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `EMAIL_FROM`, `EMAIL_FROM_NAME` e
+`EMAIL_TO` (destinatarios separados por virgula). No Gmail, use `smtp.gmail.com`, porta 587 e uma
+**app password** gerada na conta Google - a senha normal nao funciona. Pode colar a app password
+com ou sem espacos. A porta 465 usa SSL.
+
+> **Remetente:** `EMAIL_FROM` precisa ser a mesma conta do `SMTP_USER` (ou um alias verificado
+> no provedor). O Gmail reescreve o cabecalho `From` quando o dominio difere do usuario
+> autenticado, entao um endereco decorativo como `nbafantasy@daily.report` nao aparece. Use
+> `EMAIL_FROM_NAME` para dar identidade visual: o destinatario ve
+> **NBA Fantasy <seu-email@gmail.com>**. Para enviar de um dominio proprio, verifique SPF/DKIM
+> no provedor ou use um servico transacional (Resend, SendGrid, Brevo).
 
 A mensagem e a mesma nos dois canais: o resumo do dia (lineup, vendas, adds e trocas),
 nao o relatorio completo. Se nao houver nada a sinalizar, nada e enviado.

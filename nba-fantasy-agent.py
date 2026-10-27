@@ -1677,9 +1677,55 @@ def send_telegram(text):
     return r.ok
 
 
+def normalize_password(pwd):
+    """O Google mostra a app password em 4 blocos ('abcd efgh ijkl mnop').
+
+    A senha real tem 16 caracteres, sem espacos. Alguns clientes SMTP aceitam os
+    dois formatos, outros recusam - por isso normalizamos quando o formato e
+    claramente o de app password.
+    """
+    if not pwd:
+        return pwd
+    parts = pwd.split()
+    if len(parts) == 4 and all(len(p) == 4 for p in parts) and "".join(parts).isalpha():
+        return "".join(parts)
+    return pwd
+
+
+def sender_header(user, to):
+    """Monta o cabecalho From respeitando o que o servidor SMTP aceita.
+
+    O Gmail (e a maioria dos provedores) so aceita um From igual ao usuario
+    autenticado ou a um alias verificado na conta. Se o dominio de EMAIL_FROM
+    nao for o mesmo do SMTP_USER, o servidor **reescreve** o cabecalho - por isso
+    o destinatario ve o endereco da conta. Nesse caso avisamos e usamos o
+    endereco real, com um nome amigavel para nao perder a identidade visual.
+    """
+    frm = _env("EMAIL_FROM")
+    name = _env("EMAIL_FROM_NAME")
+    base = frm or user or to[0]
+
+    def domain(addr):
+        return addr.rsplit("@", 1)[-1].lower() if "@" in addr else ""
+
+    mismatch = bool(frm and user and domain(frm) != domain(user))
+    if mismatch:
+        print(f"Email: EMAIL_FROM ({frm}) usa dominio diferente do SMTP_USER "
+              f"({user}). O provedor vai reescrever o remetente - usando "
+              f"'{name or 'NBA Fantasy'} <{user}>'. Para manter {frm}, verifique o "
+              "dominio no provedor (SPF/DKIM) ou use um servico transacional.",
+              file=sys.stderr)
+        base = user
+        name = name or "NBA Fantasy"
+
+    if name:
+        return f'"{name}" <{base}>'
+    return base
+
+
 def send_email(subject, text, html=None):
     host = _env("SMTP_HOST")
-    user, pwd = _env("SMTP_USER"), _env("SMTP_PASS")
+    user, pwd = _env("SMTP_USER"), normalize_password(_env("SMTP_PASS"))
     to = [a.strip() for a in _env("EMAIL_TO").split(",") if a.strip()]
     miss = []
     if not host:
@@ -1699,7 +1745,7 @@ def send_email(subject, text, html=None):
     try:
         msg = EmailMessage()
         msg["Subject"] = subject
-        msg["From"] = _env("EMAIL_FROM") or user or to[0]
+        msg["From"] = sender_header(user, to)
         msg["To"] = ", ".join(to)
         msg.set_content(text)
         if html:
