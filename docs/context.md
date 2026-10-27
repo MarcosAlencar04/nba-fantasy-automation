@@ -224,19 +224,21 @@ Jogador marcado para IR sai da lista de drops (não precisa ser cortado) e não 
 - Se faltarem 2 dias ou menos na semana, o horizonte se estende até a semana seguinte.
 - **Nível de reposição:** 5º melhor free agent do ESPN, ou 24 FP/jogo se não houver lista (ajustável com `--replacement`).
 
-### 5.7 Trocas avaliadas dos dois lados
+### 5.7 Trocas avaliadas dos dois lados, em pacotes
 
-Troca 1x1 em que o usuário ganha pelo menos **2,5 FP/jogo** de projeção real. A avaliação é **bilateral**: cada candidato gera números para os dois lados, e só entra no relatório quem passa nos três filtros abaixo.
+A busca cobre seis formatos: **1x1, 2x1, 1x2, 2x2, 3x1 e 1x3** (quantos jogadores você entrega × quantos recebe). O 2x1 consolida dois jogadores médios em um bom; o 1x2 faz o contrário, abre o elenco. Cada candidato é avaliado **dos dois lados** e precisa passar em três filtros:
 
 | Filtro | Regra |
 |---|---|
-| Favorece você | ganho real na semana > 0 |
-| Não é absurda para ele | perda dele ≤ 50% do valor que ele recebe na semana |
+| Favorece você | ganho na **escalação titular** > 0 (`week_value` antes/depois) |
+| Não é absurdo para ele | perda dele ≤ 50% do valor que ele recebe na semana |
 | Chance real de aceite | recusa estimada ≤ 70% |
 
-O teto da perda dele é relativo (metade do que ele recebe) e não um valor fixo em FP: como trocas 1x1 somam zero, um teto absoluto descartaria justamente o "vender caro" — o caso em que você ganha muito porque o mercado supervaloriza quem você entrega.
+O filtro principal é o **ganho de lineup**, não a soma bruta de projeção. Banco não pontua: um 2x1 pode perder dezenas de FP na soma bruta e ainda assim valer +60 FP na escalação, porque os dois jogadores que saem não estavam entrando no time. Um teto absoluto em FP descartaria justamente esse caso e também o "vender caro".
 
-**O que é calculado para cada lado**
+Por isso a busca é em duas etapas: um pré-filtro barato pela soma bruta (descartando o que perde mais da metade do que sai, ou que custa ao outro mais da metade do que ele recebe) e depois a reavaliação dos 40 melhores com o otimizador de lineup. Como o pré-filtro pode esconder consolidações, a ordenação dessa etapa credita vagas abertas (`+25` por vaga).
+
+**O que é calculado para cada lado** (somando o pacote inteiro)
 
 | Métrica | Como sai |
 |---|---|
@@ -245,7 +247,8 @@ O teto da perda dele é relativo (metade do que ele recebe) e não um valor fixo
 | Cenário otimista | projeção + 70% da sorte negativa revertida + 0,25 × desvio padrão |
 | Cenário pessimista | projeção − 70% da sorte positiva revertida − 0,25 × desvio padrão |
 | Variação da média do elenco | média dos saudáveis antes e depois da troca, dos dois lados |
-| Risco de lesão | `baixo` / `medio` (DTD) / `alto` (OUT-IR, com dias até o retorno) |
+| Risco de lesão | pior do pacote: `baixo` / `medio` (DTD) / `alto` (OUT-IR) |
+| Vagas | `dá − recebe`. `+1` libera vaga para streamer, `-1` exige cortar alguém |
 
 A projeção já remove a sorte de arremesso, então os cenários respondem duas perguntas: *e se ele voltar ao normal?* (otimista, para quem está em baixa) e *e se a fase boa acabar?* (pessimista, para quem está em alta).
 
@@ -253,17 +256,22 @@ A projeção já remove a sorte de arremesso, então os cenários respondem duas
 
 | Fator | Efeito |
 |---|---|
-| Valor percebido que ele ganha | ± até 35 pontos |
+| Valor percebido que ele ganha (soma do pacote) | ± até 35 pontos |
 | Ganho/perda real dele na semana | ± até 25 pontos |
-| Agenda: recebe alguém com mais jogos | ± 3 por jogo (máx. 8) |
+| Agenda: recebe jogos a mais na semana | ± 3 por jogo (máx. 8) |
 | Média do elenco dele | ± 2,5 por FP/jogo (máx. ± 12) |
 | Ele precisa da posição que recebe | +8 por posição carente (máx. 16) |
 | Você pede posição em que ele tem sobra | +6 por posição (máx. 12) |
-| Você oferece jogador OUT/IR | teto de 12% de aceite |
-| Você oferece jogador DTD | teto de 55% de aceite |
+| O pacote que você oferece tem jogador OUT/IR | teto de 12% de aceite |
+| O pacote que você oferece tem jogador DTD | teto de 55% de aceite |
+| Ele recebe mais do que manda (sobra elenco) | −7 por jogador excedente (máx. −21) |
 | Campanha dele (se ≥ 10 jogos) | −26 × (taxa de vitórias − 0,5) |
 
-Rótulos: **Baixo** (recusa ≤ 35%), **Médio** (36–60%) e **Alto** (> 60%). O aceite entra na ordenação (`score *= 0,55 + 0,45 × aceite/100`), então trocas improváveis caem para o fim. O **risco de veto** é separado: alto quando o ganho passa de 8 FP/jogo, médio acima de 5. No máximo 2 sugestões por time e 8 no total.
+Rótulos: **Baixo** (recusa ≤ 35%), **Médio** (36–60%) e **Alto** (> 60%). O **risco de veto** acompanha o tamanho do pacote: alto acima de `8 × (jogadores/2)` FP/jogo de ganho, médio acima de `5 × (jogadores/2)` — senão um 2x2 justo seria marcado como veto só porque as diferenças somam mais.
+
+**Limites de legalidade** (`trade_legal`): o limite de pivôs (`MAX_CENTERS`) é bloqueante, porque o ESPN recusa. O tamanho do elenco entra com folga de 2 jogadores — o outro dono pode cortar alguém para fechar um 2x1, e esse custo já está na chance de aceite.
+
+**Seleção final:** no máximo 2 sugestões por time, 3 por formato e 10 no total. A primeira passada garante **um exemplo de cada formato** disponível (o mesmo jogador pode reaparecer, para você comparar "esse cara em 1x1 ou em 2x1"); a segunda completa com as melhores restantes sem repetir jogador.
 
 ### 5.8 Sinais da semana (comprar e vender)
 
@@ -351,6 +359,8 @@ Pontos que podem falhar na primeira execução real e merecem atenção:
 - **Trava por horário de jogo:** o agente não verifica horários; só desconsidera o jogo de hoje se ele já aparece no game log.
 - **Waivers:** a recomendação é um claim (processa no dia seguinte, com ordem fixa), não uma contratação instantânea.
 - **Aceitação de trocas:** é heurística. Considera necessidade posicional do outro time, mas não o histórico dele em trocas anteriores nem o valor de jogadores fora do topo do elenco dele.
+- **Pacotes de troca:** a busca é combinatória sobre os 8 jogadores mais valiosos de cada lado. Uma troca que só faz sentido usando um jogador fora desse pool não é encontrada.
+- **Vaga aberta em 2x1:** entra como bônus na ordenação, mas o agente não simula qual free agent preencheria a vaga — quem decide é você.
 - **Início de temporada:** com poucos jogos, os sinais de "vender na alta" e "comprar na baixa" são pouco confiáveis; o relatório marca amostra pequena.
 - **Limite de Centers:** conta jogadores com elegibilidade C (pode divergir de como o ESPN conta híbridos).
 - **IR:** os 3 slots de IR não estão modelados como regra; jogadores com status IR apenas ficam fora do lineup e da lista de drops.
@@ -400,7 +410,8 @@ EMAIL_TO=
 2. Validar a leitura de elenco, free agents e outros times.
 3. Rodar durante 1 a 2 semanas só como consulta, comparando as sugestões com o que acontece, antes de confiar nelas.
 4. Possíveis evoluções:
-   - Trocas 2x1 (consolidação).
+   - Trocas 3x3 e 3x2.
+   - Simular o valor da vaga aberta num 2x1 com o free agent que a preencheria.
    - Duas execuções por dia (manhã e uma hora antes do primeiro jogo, para rechecar lesões).
    - Leitura de horários de jogo para respeitar a trava individual.
    - Fonte de lesões independente do ESPN.
@@ -426,9 +437,12 @@ EMAIL_TO=
 | Fator de back-to-back | 0,96 | `day_value` |
 | Disponibilidade DTD | 0,6 hoje, 0,85 depois | `avail_prob` |
 | Corte de add/drop | score ≥ 8 | `run_analysis` |
-| Corte de troca | ganho ≥ 2,5 FP/jogo | `run_analysis` |
-| Teto da perda dele na troca | 50% do valor semanal recebido | `run_analysis` |
-| Recusa máxima aceita | 70% | `run_analysis` |
+| Formatos de troca | 1x1, 2x1, 1x2, 2x2, 3x1, 1x3 | `find_trades` |
+| Pool de troca | 8 jogadores de cada lado | `find_trades` |
+| Shortlist de lineup | 40 candidatos reavaliados | `find_trades` |
+| Folga de elenco na troca | +2 jogadores | `trade_legal` |
+| Teto da perda dele na troca | 50% do valor semanal recebido | `find_trades` |
+| Recusa máxima aceita | 70% | `find_trades` |
 | Fator de cenário | 0,7 da sorte revertida ± 0,25 do desvio | `scenario_points` |
 | Remoções na escalação | ≤ número de reservas aptos | `plan_lineup_changes` |
 
