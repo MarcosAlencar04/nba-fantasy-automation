@@ -51,16 +51,31 @@ python nba_fantasy_agent.py --espn
 
 Os cookies expiram de tempos em tempos. Se der erro de autenticacao, copie de novo.
 
-## 5. Telegram (opcional)
+## 5. Telegram e/ou email (opcional)
 
-Preencha `TELEGRAM_TOKEN` e `TELEGRAM_CHAT_ID` no `.env` e rode com `--telegram`.
+Preencha as variaveis no `.env` e escolha o canal na execucao:
+
+```bash
+python nba_fantasy_agent.py --espn --telegram   # so Telegram
+python nba_fantasy_agent.py --espn --email      # so email
+python nba_fantasy_agent.py --espn --notify     # os dois
+```
+
+Telegram: `TELEGRAM_TOKEN` e `TELEGRAM_CHAT_ID` (crie o bot com o `@BotFather`).
+
+Email (SMTP): `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `EMAIL_FROM` e `EMAIL_TO`
+(destinatarios separados por virgula). No Gmail, use `smtp.gmail.com`, porta 587 e uma
+**app password** gerada na conta Google - a senha normal nao funciona. A porta 465 usa SSL.
+
+A mensagem e a mesma nos dois canais: o resumo do dia (lineup, vendas, adds e trocas),
+nao o relatorio completo. Se nao houver nada a sinalizar, nada e enviado.
 
 ## 6. Automatizar
 
 Linux/Mac, todo dia as 10h (cron):
 
 ```
-0 10 * * * cd /caminho/da/pasta && python nba_fantasy_agent.py --espn --telegram
+0 10 * * * cd /caminho/da/pasta && python nba_fantasy_agent.py --espn --notify
 ```
 
 Windows: use o Agendador de Tarefas.

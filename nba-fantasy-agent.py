@@ -31,11 +31,13 @@ import math
 import os
 import pickle
 import re
+import smtplib
 import sys
 import time
 import unicodedata
 from collections import defaultdict
 from datetime import date, datetime, timedelta
+from email.message import EmailMessage
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -97,6 +99,14 @@ def cached(key, ttl_h, fn, refresh=False):
     with open(f, "wb") as fh:
         pickle.dump(obj, fh)
     return obj
+
+
+def _env(name):
+    return (os.getenv(name) or "").strip()
+
+
+def missing_env(*names):
+    return [n for n in names if not _env(n)]
 
 
 def season_str(d: date) -> str:
@@ -549,8 +559,8 @@ def elig_from_espn(p):
 
 def fetch_espn(year, roster_names, fa_size=150):
     from espn_api.basketball import League
-    lg = League(league_id=int(os.environ["ESPN_LEAGUE_ID"]), year=year,
-                espn_s2=os.getenv("ESPN_S2"), swid=os.getenv("ESPN_SWID"))
+    lg = League(league_id=int(_env("ESPN_LEAGUE_ID")), year=year,
+                espn_s2=_env("ESPN_S2") or None, swid=_env("ESPN_SWID") or None)
 
     def conv(p):
         return dict(name=p.name, elig=elig_from_espn(p),
@@ -932,16 +942,78 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
 
 
 # --------------------------------------------------------------------------
-# Telegram (opcional)
+# Notificacoes (Telegram / email)
 # --------------------------------------------------------------------------
 def send_telegram(text):
-    tok, chat = os.getenv("TELEGRAM_TOKEN"), os.getenv("TELEGRAM_CHAT_ID")
-    if not tok or not chat:
-        print("Telegram: defina TELEGRAM_TOKEN e TELEGRAM_CHAT_ID no .env", file=sys.stderr)
-        return
-    r = requests.post(f"https://api.telegram.org/bot{tok}/sendMessage",
-                      data={"chat_id": chat, "text": text[:3900]}, timeout=20)
+    miss = missing_env("TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID")
+    if miss:
+        print(f"Telegram: ignorado (faltando no .env: {', '.join(miss)})", file=sys.stderr)
+        return False
+    try:
+        r = requests.post(f"https://api.telegram.org/bot{_env('TELEGRAM_TOKEN')}/sendMessage",
+                          data={"chat_id": _env("TELEGRAM_CHAT_ID"), "text": text[:3900]}, timeout=20)
+    except Exception as ex:
+        print(f"Telegram: erro ({ex})", file=sys.stderr)
+        return False
     print("Telegram:", "enviado" if r.ok else f"erro {r.status_code}")
+    return r.ok
+
+
+def send_email(subject, text):
+    host = _env("SMTP_HOST")
+    user, pwd = _env("SMTP_USER"), _env("SMTP_PASS")
+    to = [a.strip() for a in _env("EMAIL_TO").split(",") if a.strip()]
+    miss = []
+    if not host:
+        miss.append("SMTP_HOST")
+    if not to:
+        miss.append("EMAIL_TO")
+    if bool(user) != bool(pwd):
+        miss.append("SMTP_USER/SMTP_PASS (preencha os dois ou nenhum)")
+    if miss:
+        print(f"Email: ignorado (faltando no .env: {', '.join(miss)})", file=sys.stderr)
+        return False
+    try:
+        port = int(_env("SMTP_PORT") or 587)
+    except ValueError:
+        print(f"Email: SMTP_PORT invalido ({_env('SMTP_PORT')}); usando 587.", file=sys.stderr)
+        port = 587
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = subject
+        msg["From"] = _env("EMAIL_FROM") or user or to[0]
+        msg["To"] = ", ".join(to)
+        msg.set_content(text)
+        if port == 465:
+            with smtplib.SMTP_SSL(host, port, timeout=30) as s:
+                if user:
+                    s.login(user, pwd)
+                s.send_message(msg)
+        else:
+            with smtplib.SMTP(host, port, timeout=30) as s:
+                s.starttls()
+                if user:
+                    s.login(user, pwd)
+                s.send_message(msg)
+        print("Email:", f"enviado para {', '.join(to)}")
+        return True
+    except Exception as ex:
+        print(f"Email: erro ({ex})", file=sys.stderr)
+        return False
+
+
+def notify(summary, today, telegram=False, email=False):
+    subject = f"NBA Fantasy {today.strftime('%d/%m')}"
+    text = subject + "\n\n" + "\n".join(summary)
+    results = {}
+    if telegram:
+        results["telegram"] = send_telegram(text)
+    if email:
+        results["email"] = send_email(subject, text)
+    failed = [k for k, ok in results.items() if not ok]
+    if failed:
+        print(f"Notificacao: falhou em {', '.join(failed)} (o relatorio foi gerado normalmente).", file=sys.stderr)
+    return not failed
 
 
 # --------------------------------------------------------------------------
@@ -956,7 +1028,9 @@ def main():
     ap.add_argument("--recent", type=int, default=5, help="janela 'recente' em jogos")
     ap.add_argument("--replacement", type=float, default=24.0, help="FP/jogo de nivel de reposicao (sem --espn)")
     ap.add_argument("--date", default=None, help="AAAA-MM-DD (padrao: hoje no fuso da NBA)")
-    ap.add_argument("--telegram", action="store_true")
+    ap.add_argument("--telegram", action="store_true", help="envia o resumo pelo Telegram")
+    ap.add_argument("--email", action="store_true", help="envia o resumo por email (SMTP)")
+    ap.add_argument("--notify", action="store_true", help="envia o resumo pelo Telegram e por email")
     ap.add_argument("--refresh", action="store_true", help="ignora o cache de dados")
     ap.add_argument("--out-dir", default="reports")
     opts = ap.parse_args()
@@ -970,6 +1044,10 @@ def main():
     if not Path(opts.roster).exists():
         sys.exit(f"Arquivo {opts.roster} nao encontrado. Crie um CSV 'Nome, Posicao' (um jogador por linha).")
     roster_rows = read_roster_csv(opts.roster)
+    if opts.candidates and not Path(opts.candidates).exists():
+        print(f"Aviso: arquivo de candidatos '{opts.candidates}' nao encontrado; ignorando --candidates.",
+              file=sys.stderr)
+        opts.candidates = None
 
     print(f"Coletando dados da NBA ({season})...", file=sys.stderr)
     cur = prep_logs(cached(f"log_{season}", 3, lambda: fetch_gamelog(season), opts.refresh))
@@ -987,7 +1065,12 @@ def main():
         positions = {}
 
     fa = teams = status = None
-    if opts.espn:
+    if opts.espn and not _env("ESPN_LEAGUE_ID"):
+        print("Aviso: --espn ignorado (falta ESPN_LEAGUE_ID no .env). Seguindo sem free agents, "
+              "lesoes do ESPN e trocas.", file=sys.stderr)
+    elif opts.espn:
+        if missing_env("ESPN_SWID", "ESPN_S2"):
+            print("Aviso: ESPN_SWID/ESPN_S2 ausentes no .env; so funciona em liga publica.", file=sys.stderr)
         try:
             print("Lendo liga no ESPN...", file=sys.stderr)
             data = fetch_espn(int(season[:4]) + 1, [r["name"] for r in roster_rows])
@@ -1007,8 +1090,13 @@ def main():
     f = out / f"relatorio_{today.isoformat()}.md"
     f.write_text(report, encoding="utf-8")
     print(f"\n[salvo em {f}]", file=sys.stderr)
-    if opts.telegram and summary:
-        send_telegram(f"NBA Fantasy {today.strftime('%d/%m')}\n\n" + "\n".join(summary))
+    want_telegram = opts.telegram or opts.notify
+    want_email = opts.email or opts.notify
+    if summary and (want_telegram or want_email):
+        try:
+            notify(summary, today, telegram=want_telegram, email=want_email)
+        except Exception as ex:
+            print(f"Aviso: falha ao notificar ({ex}); o relatorio foi salvo normalmente.", file=sys.stderr)
 
 
 if __name__ == "__main__":

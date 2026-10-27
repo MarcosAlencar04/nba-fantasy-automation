@@ -133,7 +133,7 @@ Funções principais:
 
 ### Argumentos de linha de comando
 
-`--roster`, `--candidates`, `--espn`, `--adds-used N`, `--recent N` (janela recente, padrão 5 jogos), `--replacement X` (nível de reposição, padrão 24), `--date AAAA-MM-DD`, `--telegram`, `--refresh`, `--out-dir`.
+`--roster`, `--candidates`, `--espn`, `--adds-used N`, `--recent N` (janela recente, padrão 5 jogos), `--replacement X` (nível de reposição, padrão 24), `--date AAAA-MM-DD`, `--telegram`, `--email`, `--notify`, `--refresh`, `--out-dir`.
 
 ---
 
@@ -245,10 +245,17 @@ ESPN_SWID={...}
 ESPN_S2=
 TELEGRAM_TOKEN=
 TELEGRAM_CHAT_ID=
+SMTP_HOST=
+SMTP_PORT=
+SMTP_USER=
+SMTP_PASS=
+EMAIL_FROM=
+EMAIL_TO=
 ```
 
 - `ESPN_LEAGUE_ID`: o `leagueId=` na URL da liga.
 - `ESPN_SWID` e `ESPN_S2`: cookies do navegador logado em espn.com (F12, Application ou Storage, Cookies). Expiram de tempos em tempos.
+- **Email:** `SMTP_HOST`/`SMTP_PORT` (587 com STARTTLS ou 465 com SSL), `SMTP_USER`, `SMTP_PASS` (no Gmail, app password), `EMAIL_FROM` (opcional, padrão `SMTP_USER`) e `EMAIL_TO` (vários destinatários separados por vírgula). Enviado por `smtplib` da stdlib, sem dependência nova.
 - A temporada 2026-27 corresponde a `year=2027` no `espn-api` (o código calcula sozinho).
 - O time do usuário é identificado automaticamente pela maior sobreposição de nomes com o `roster.csv` (mínimo de 3 jogadores).
 
