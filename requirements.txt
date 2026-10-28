@@ -1,5 +1,5 @@
-nba_api>=1.5
-espn-api>=0.39
+nba_api>=1.12.0
+espn-api>=1.0.1
 pandas
 numpy
 scipy
