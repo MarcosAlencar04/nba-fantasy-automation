@@ -160,8 +160,81 @@ para criar a liga primeiro.
 
 ## O que **nao** esta implementado ainda
 
-- O agente continua lendo os secrets posicionais (`ESPN_TEAM_ID=7,9,11`).
-  Ligar o Actions ao banco e a fase seguinte, e vai precisar de fallback para os
-  secrets caso o banco esteja indisponivel.
 - Sem historico de auditoria (quem alterou o que). O `updated_at` existe, o autor
   nao.
+
+---
+
+# Ligacao com o agente (GitHub Actions)
+
+O agente le do banco. Nao ha sincronizacao manual: o que estiver cadastrado e
+**ativo** no painel entra no proximo run.
+
+```
+painel (CRUD)  ->  users + leagues  ->  teams.py matrix  ->  N jobs do agente
+```
+
+## Como o agente consulta
+
+```sql
+SELECT u.name, u.espn_team_id, u.email, u.telegram_id,
+       l.name, l.espn_league_id, l.espn_swid, l.espn_s2
+  FROM users u JOIN leagues l ON l.id = u.league_id
+ WHERE u.is_active AND u.deleted_at IS NULL
+   AND l.is_active AND l.deleted_at IS NULL
+ ORDER BY l.name, u.name
+```
+
+Consequencias praticas, todas controladas pelo painel:
+
+| Acao no painel | Efeito no proximo run |
+|---|---|
+| `is_active = false` no usuario | sai do run (nao recebe nada) |
+| `is_active = false` na liga | todos os usuarios dela saem |
+| Excluir (soft delete) | sai do run; dados ficam para historico |
+| Preencher `email` | passa a receber email |
+| Preencher `telegram_id` | passa a receber no Telegram |
+| Mudar `espn_team_id` | passa a analisar outro time |
+| Mudar cookies da liga | vale para todos os usuarios daquela liga |
+
+## Configuracao no GitHub
+
+Um unico secret novo:
+
+```
+DATABASE_URL = postgresql://...-pooler...neon.tech/neondb?sslmode=require
+```
+
+Os antigos `ESPN_LEAGUE_ID` / `ESPN_SWID` / `ESPN_S2` deixam de ser necessarios —
+vem da tabela `leagues`. `ESPN_TEAM_ID`, `EMAIL_TO` e `TELEGRAM_CHAT_ID` tambem
+podem ser removidos (so servem ao modo legado sem banco).
+
+## Testar sem rodar o workflow
+
+```bash
+export DATABASE_URL='postgresql://...'
+
+python3 teams.py matrix        # lista quem entraria no run
+python3 teams.py resolve 0     # mostra o que o job #0 receberia
+```
+
+`resolve` imprime no formato do `$GITHUB_ENV` (heredoc), que e' util para
+conferir se os cookies chegaram inteiros:
+
+```bash
+python3 teams.py resolve 0 | grep -A1 ESPN_S2
+```
+
+## Saudacao personalizada
+
+O `name` do usuario vai para o email como `Oi, Fulano!` (texto, HTML e Telegram).
+Sem nome cadastrado, o bloco nao aparece.
+
+## Ordem importa
+
+Se uma liga estiver com `espn_s2` vazio, o `teams.py matrix` **aborta** nomeando a
+liga e o usuario. E proposital: sem cookie a leitura do ESPN falharia de qualquer
+forma, e o meio do run e' um lugar pior para descobrir.
+
+O mesmo vale para banco vazio: `matrix` com zero usuarios e' erro explicito, nao
+um matrix vazio que faria o Actions nao rodar nada em silencio.

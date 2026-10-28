@@ -6,3 +6,7 @@ scipy
 requests
 python-dotenv
 tzdata
+
+# Cliente do Postgres, usado por teams.py para ler a lista de usuarios do banco.
+# O agente em si nao usa, mas o passo "Resolver destinatario" do workflow sim.
+psycopg[binary]==3.2.10

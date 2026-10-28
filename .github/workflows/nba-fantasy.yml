@@ -47,14 +47,14 @@ jobs:
         id: gate
         run: python3 gate.py
 
-  # Os times vem de listas posicionais nos secrets:
+  # Os times vem do BANCO (Neon), com fallback para as listas posicionais nos
+  # secrets quando DATABASE_URL nao existe:
   #
-  #   ESPN_TEAM_ID      = 7,9,11
-  #   EMAIL_TO          = marcos@x.com,amigo@y.com,outro@z.com
-  #   TELEGRAM_CHAT_ID  = 111,XXX,333
+  #   banco    -> users JOIN leagues, WHERE is_active  (padrao)
+  #   secrets  -> ESPN_TEAM_ID=7,9,11 + EMAIL_TO + TELEGRAM_CHAT_ID
   #
-  # A ordem e o pareamento: a posicao N de ESPN_TEAM_ID e o time da posicao N
-  # dos destinatarios. ESPN_TEAM_ID e quem manda no tamanho da lista.
+  # Nao ha limite de quantidade: o matrix e' montado a partir do que estiver
+  # cadastrado e ativo no painel.
   #
   # A normalizacao fica em teams.py, usado por ESTE job e pelo job do agente. A
   # versao anterior fazia `awk -F,` aqui e um heredoc Python la, e as duas
@@ -69,6 +69,7 @@ jobs:
     outputs:
       matrix: ${{ steps.load.outputs.matrix }}
     env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
       ESPN_TEAM_ID: ${{ secrets.ESPN_TEAM_ID }}
       EMAIL_TO: ${{ secrets.EMAIL_TO }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -77,12 +78,22 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # So o cliente do Postgres: as demais dependencias (pandas/scipy) sao
+      # pesadas e nao sao usadas para montar o matrix.
+      - name: Instalar cliente do banco
+        if: env.DATABASE_URL != ''
+        run: pip install "psycopg[binary]==3.2.10"
+
       - name: Contar times
         id: load
         run: |
           set -eu
-          # So os indices vao para o matrix: e-mails e chat ids nao aparecem na
-          # lista de jobs do Actions.
+          # So indices e nomes vao para o matrix: e-mails e chat ids nao
+          # aparecem na lista de jobs do Actions.
           matrix=$(python3 teams.py matrix)
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
@@ -102,15 +113,17 @@ jobs:
     env:
       MODE: ${{ github.event.schedule == '0 13 * * *' && 'morning' || github.event.inputs.mode || 'gate' }}
       INDEX: ${{ matrix.index }}
-      # Listas completas. O passo "Resolver destinatario" recorta a posicao
-      # INDEX e sobrescreve estas variaveis no $GITHUB_ENV.
+      # Fonte da lista. DATABASE_URL tem precedencia; os secrets posicionais so
+      # sao usados quando ela nao existe (modo legado).
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
       ESPN_TEAM_ID: ${{ secrets.ESPN_TEAM_ID }}
       EMAIL_TO: ${{ secrets.EMAIL_TO }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      # Credenciais da liga: compartilhadas por todos os times.
-      ESPN_LEAGUE_ID: ${{ secrets.ESPN_LEAGUE_ID }}
-      ESPN_SWID: ${{ secrets.ESPN_SWID }}
-      ESPN_S2: ${{ secrets.ESPN_S2 }}
+      # ESPN_LEAGUE_ID / ESPN_SWID / ESPN_S2 NAO ficam aqui: o passo "Resolver
+      # destinatario" escreve os tres no $GITHUB_ENV a partir da tabela
+      # `leagues`, entao cada usuario usa as credenciais da PROPRIA liga. Manter
+      # os secrets aqui criaria duas fontes para o mesmo dado — e um cookie
+      # velho no secret mascararia o cookie novo do banco.
       TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
       SMTP_HOST: ${{ secrets.SMTP_HOST }}
       SMTP_PORT: ${{ secrets.SMTP_PORT }}
@@ -124,15 +137,6 @@ jobs:
         with:
           persist-credentials: false
 
-      # Recorta a posicao INDEX das tres listas, com a mesma normalizacao que o
-      # job `times` usou para montar o matrix. Uma entrada vazia (ou um
-      # placeholder como "XXX") desliga aquele canal para este time — nao cai no
-      # destinatario de outro, senao o relatorio vazaria para a pessoa errada.
-      - name: Resolver destinatario
-        run: |
-          set -eu
-          python3 teams.py resolve "$INDEX" >> "$GITHUB_ENV"
-
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -140,15 +144,27 @@ jobs:
       - name: Instalar dependencias
         run: pip install -r requirements.txt
 
+      # Recorta o usuario INDEX da fonte (banco ou secrets), com a mesma
+      # normalizacao que o job `times` usou para montar o matrix. Uma entrada
+      # vazia (ou um placeholder como "XXX") desliga aquele canal para este
+      # usuario — nao cai no destinatario de outro, senao o relatorio vazaria
+      # para a pessoa errada.
+      #
+      # Roda DEPOIS do pip install porque precisa do psycopg para ler o banco.
+      - name: Resolver destinatario
+        run: |
+          set -eu
+          python3 teams.py resolve "$INDEX" >> "$GITHUB_ENV"
+
       - name: Rodar o agente
         run: |
           # A execucao da manha traz o relatorio completo; as demais (pre-jogo)
           # trazem so escalacao e IR.
-          ARGS="--notify --out-dir reports/time-$INDEX"
+          ARGS="--notify --out-dir reports/$INDEX"
           if [ "$MODE" != "morning" ]; then
             ARGS="$ARGS --lineup-only"
           fi
-          echo "time: #$INDEX | modo: $MODE | args: $ARGS"
+          echo "usuario: ${USER_NAME:-<sem nome>} (team_id $ESPN_TEAM_ID) | modo: $MODE"
           echo "destinatario: ${EMAIL_TO:-<sem email>} / ${TELEGRAM_CHAT_ID:-<sem telegram>}"
           python nba-fantasy-agent.py $ARGS
 
@@ -156,7 +172,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: relatorio-time-${{ matrix.index }}-${{ github.run_id }}
-          path: reports/time-${{ matrix.index }}/
+          name: relatorio-${{ matrix.index }}-${{ github.run_id }}
+          path: reports/${{ matrix.index }}/
           retention-days: 7
           if-no-files-found: ignore

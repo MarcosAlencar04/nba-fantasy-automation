@@ -2307,6 +2307,12 @@ def render_email_html(d):
 
     # ---------- cabecalho ----------
     kicker = "NBA Fantasy · Pre-jogo" if lineup_only else "NBA Fantasy"
+    # Saudacao personalizada: `USER_NAME` vem do cadastro (workflow) ou do .env
+    # local. Sem nome, o bloco inteiro some e o cabecalho fica como antes.
+    who = (_env("USER_NAME") or "").strip()
+    hello = (f'<div style="color:{INK};font-size:13px;margin-top:9px">'
+             f'Oi, <strong>{esc(who)}</strong> — aqui esta o resumo do seu time.'
+             f'</div>' if who else "")
     rows.append(
         f'<tr><td style="background:{SOFT};padding:26px 28px;'
         f'border-bottom:1px solid {LINE}">'
@@ -2317,6 +2323,7 @@ def render_email_html(d):
         f'text-transform:uppercase;font-weight:700">{esc(kicker)}</div>'
         f'<div style="color:#ffffff;font-size:21px;font-weight:700;margin-top:4px">{team}</div>'
         f'<div style="color:{MUTED};font-size:12px;margin-top:4px">{esc(meta)}</div>'
+        f'{hello}'
         f'</td></tr></table></td></tr>')
 
     # ---------- faixa de numeros ----------
@@ -2737,8 +2744,12 @@ def render_email_html(d):
 
 def notify(summary, today, telegram=False, email=False, digest=None):
     team = (digest or {}).get("team_name") or ""
+    who = (_env("USER_NAME") or "").strip()
     subject = f"NBA Fantasy {today.strftime('%d/%m')}" + (f" · {team}" if team else "")
-    text = subject + "\n\n" + "\n".join(summary)
+    # Saudacao com o nome cadastrado no painel. No modo secrets nao ha nome, e a
+    # linha simplesmente nao aparece.
+    lines = ([f"Oi, {who}!", ""] if who else []) + list(summary)
+    text = subject + "\n\n" + "\n".join(lines)
     results = {}
     if telegram:
         results["telegram"] = send_telegram(text)
@@ -2793,10 +2804,16 @@ def main():
     print(f"Coletando dados da NBA ({season})...", file=sys.stderr)
 
     if not _env("ESPN_LEAGUE_ID"):
-        sys.exit("Defina ESPN_LEAGUE_ID (e ESPN_TEAM_ID) no .env: o elenco vem da API do ESPN.")
+        sys.exit(
+            "ESPN_LEAGUE_ID nao esta definido. Na nuvem ele vem do banco (tabela "
+            "`leagues`) via `teams.py resolve`, entao confira se a liga do usuario "
+            "esta cadastrada e ativa no painel. Rodando local, defina no .env."
+        )
 
     if missing_env("ESPN_SWID", "ESPN_S2"):
-        print("Aviso: ESPN_SWID/ESPN_S2 ausentes no .env; so funciona em liga publica.", file=sys.stderr)
+        print("Aviso: ESPN_SWID/ESPN_S2 ausentes; so funciona em liga publica. "
+              "Na nuvem, preencha os cookies no painel (liga do usuario).",
+              file=sys.stderr)
 
     fa = teams = status = my_players = None
     print("Lendo liga no ESPN...", file=sys.stderr)

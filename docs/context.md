@@ -126,7 +126,8 @@ Funções principais:
 | `nba_fantasy_agent.py` | O agente. |
 | `gate.py` | Portão do GitHub Actions: libera a execução só na janela de 30 min antes do 1º jogo. |
 | `.github/workflows/nba-fantasy.yml` | Agendamento na nuvem (cron da manhã + a cada 30 min, 1 job por time). |
-| `teams.py` | Normaliza as listas posicionais de times dos secrets (usado pelos jobs `times` e `agente`). |
+| `teams.py` | Fonte da lista de usuários: banco (padrão) ou secrets posicionais. Usado pelos jobs `times` e `agente`. |
+| `panel/` | Painel web de ligas e usuários (FastAPI + Jinja2, deploy no Vercel). |
 | `.github/dependabot.yml` | Atualiza actions e dependências Python mensalmente, para não voltar a acumular runtime depreciado. |
 | `scheduler.py` | Agendador alternativo para rodar localmente (loop contínuo). |
 | `systemd/nba-fantasy.service` | Unit do systemd para o agendador local. |
@@ -336,46 +337,99 @@ A comparação de escalação é por **conjunto de nomes**, para não acusar mud
 
 ### 5.11 Vários times, um destinatário por time
 
-Os times vêm de **listas posicionais nos secrets**, sem arquivo de configuração. `fetch_espn()` já lê todos os times da liga em uma chamada, então o custo de um time extra é apenas mais uma execução do agente — a coleta de dados da NBA é idêntica.
+A lista vem do **banco** (painel em `panel/`), com as listas posicionais nos secrets como modo legado. `fetch_espn()` já lê todos os times da liga em uma chamada, então o custo de um usuário extra é apenas mais uma execução do agente.
 
-```dotenv
-ESPN_TEAM_ID=7,9,11
-EMAIL_TO=marcos@x.com,amigo@y.com,outro@z.com
-TELEGRAM_CHAT_ID=123456789,XXX,987654321
+```mermaid
+flowchart LR
+    DB[("users JOIN leagues<br/>WHERE is_active")] --> M["teams.py matrix"]
+    M --> MX["matrix [{index, name}]"]
+    MX --> J1["agente #0"]
+    MX --> J2["agente #1"]
+    MX --> JN["agente #N"]
 ```
 
-Não há limite de quantidade: adicionar uma pessoa é só acrescentar uma entrada nas três listas.
+**Precedência de fontes** (`teams.load_users`):
 
-| Secret | Papel |
+| Situação | Comportamento |
 |---|---|
-| `ESPN_TEAM_ID` | **define o tamanho da lista** (sem time não há o que analisar) |
-| `EMAIL_TO` | destinatário da posição N |
-| `TELEGRAM_CHAT_ID` | chat da posição N |
+| `DATABASE_URL` definida e responde | usa o banco |
+| `DATABASE_URL` definida e o banco falha (após 3 tentativas) | **aborta** com erro explícito |
+| `DATABASE_URL` ausente | usa `ESPN_TEAM_ID` / `EMAIL_TO` / `TELEGRAM_CHAT_ID` |
+| Nenhuma das duas | aborta pedindo configuração |
+| Banco sem usuário ativo | aborta pedindo cadastro |
+
+O banco **não** cai para os secrets quando falha. Um fallback silencioso para uma lista velha notificaria as pessoas erradas sem que ninguém percebesse; um job vermelho é visível e corrigível.
+
+Pela mesma razão, `matrix` com zero usuários é erro e não `{"include": []}`: um matrix vazio faz o Actions simplesmente não rodar nada, em silêncio.
 
 O workflow tem três jobs:
 
 | Job | Quantos | Papel |
 |---|---|---|
 | `gate` | 1 | roda `gate.py` e expõe `run` |
-| `times` | 1 | roda `teams.py matrix` → `[{index: 0}, {index: 1}, {index: 2}]` |
-| `agente` | 1 por índice | roda `teams.py resolve <índice>` e a análise |
+| `times` | 1 | `teams.py matrix` → `[{index, name}]` |
+| `agente` | 1 por índice | `teams.py resolve <índice>` e a análise |
 
-O gate fica **fora** do matrix porque o placar da NBA é global: rodá-lo por time multiplicaria spin-ups para chegar à mesma resposta. O matrix só expõe `index`, então e-mails e chat ids não aparecem na UI do Actions.
+O gate fica **fora** do matrix porque o placar da NBA é global: rodá-lo por time multiplicaria spin-ups para chegar à mesma resposta. O matrix expõe só `index` e `name`, então e-mails e chat ids não aparecem na UI do Actions.
 
-**Parsing centralizado em `teams.py`.** Antes o job `times` contava com `awk -F,` e o job do agente recortava com um heredoc Python — dois parsers que discordavam justamente nos formatos que colar num campo de secret produz:
+#### Consulta e filtros
 
-| Entrada | `awk -F,` (antigo) | `teams.py` (atual) |
+```sql
+SELECT u.name, u.espn_team_id, u.email, u.telegram_id,
+       l.name, l.espn_league_id, l.espn_swid, l.espn_s2
+  FROM users u JOIN leagues l ON l.id = u.league_id
+ WHERE u.is_active AND u.deleted_at IS NULL
+   AND l.is_active AND l.deleted_at IS NULL
+ ORDER BY l.name, u.name
+```
+
+Desativar um usuário ou uma liga no painel basta para sair do próximo run — sem tocar em secret. Usuário de liga inativa é filtrado junto.
+
+Se a liga estiver sem `espn_s2` (ou `swid`/`league_id`), o script aborta nomeando **a liga e o usuário**: sem cookie a leitura do ESPN falharia de qualquer forma, e o meio do run é um lugar pior para descobrir isso.
+
+#### Credenciais por liga
+
+`resolve` exporta `ESPN_LEAGUE_ID`, `ESPN_SWID` e `ESPN_S2` **sempre**, nos dois modos:
+
+| Modo | Origem das credenciais |
+|---|---|
+| banco | da liga **daquele** usuário (`leagues` via `users.league_id`) |
+| secrets | do ambiente (uma liga por execução) |
+
+Isso permite atender **ligas diferentes no mesmo run**, cada job com os próprios cookies. O workflow **não** declara `ESPN_LEAGUE_ID`/`ESPN_SWID`/`ESPN_S2` nos secrets: eles chegariam como `env:` do job e ficariam no ambiente do passo, criando duas fontes para o mesmo dado — um cookie velho no secret mascararia o cookie novo do banco. Com uma única origem (o `$GITHUB_ENV` escrito por `resolve`), o que vale é sempre o que foi cadastrado.
+
+No modo legado o `load_from_secrets` lê as três do ambiente e as devolve no mesmo formato, então `resolve` emite igual — o agente não sabe de onde vieram.
+
+#### Formato do `$GITHUB_ENV`
+
+`resolve` usa a sintaxe heredoc (`KEY<<DELIM`), não `KEY=valor`. Os cookies `ESPN_S2` vêm com `%2B`, `+` e `=`; o heredoc sobrevive a tudo isso sem escape, e a um valor com quebra de linha.
+
+#### Saudação personalizada
+
+`resolve` exporta `USER_NAME`. O agente usa em:
+
+| Saída | Efeito |
+|---|---|
+| email (texto) | linha `Oi, Fulano!` antes do resumo |
+| email (HTML) | `Oi, **Fulano** — aqui está o resumo do seu time.` no cabeçalho |
+| Telegram | mesma linha |
+
+Sem `USER_NAME` (modo secrets), o bloco simplesmente não aparece. O nome é escapado com `escape()` no HTML.
+
+#### Modo legado (secrets)
+
+`split_list` trata `,`, espaço, tab e quebra de linha como separadores e **descarta entradas vazias**, então vírgula final e separadores repetidos não geram índice fantasma. `;` fica de fora de propósito: separa vários destinatários do **mesmo** time.
+
+| Entrada | `awk -F,` (antigo) | `teams.py` |
 |---|---|---|
 | `7,9,11` | 3 | 3 |
-| `7,9,11,` (vírgula final) | **4** → índice 3 sem time → job falha | 3 |
-| `7\n9\n11` (quebra de linha) | **1** → só 1 time, id inválido | 3 |
+| `7,9,11,` (vírgula final) | **4** → índice 3 sem time | 3 |
+| `7\n9\n11` (quebra de linha) | **1** → só 1, id inválido | 3 |
 | `7,,11` | **3** → índice 1 sem time | 2 |
 
-`split_list` trata `,`, espaço, tab e quebra de linha como separadores e **descarta entradas vazias**, então vírgula final e separadores repetidos não geram índice fantasma. `;` fica de fora de propósito: ele separa vários destinatários do **mesmo** time.
+O diagnóstico (`fonte=banco usuarios=3 ...`) vai para **stderr**: o stdout vai inteiro para o `$GITHUB_OUTPUT`, e qualquer linha extra corromperia o JSON do matrix.
 
-`teams.py` valida que cada `ESPN_TEAM_ID` é numérico e aborta com a posição exata do problema. O diagnóstico (`times=3 emails=3 chats=3`) vai para **stderr**: o stdout vai inteiro para o `$GITHUB_OUTPUT`, e qualquer linha extra corromperia o JSON do matrix.
-
-**Semântica das posições** (crítica para privacidade):
+**Semântica das posições:**
 
 | Entrada | Significa |
 |---|---|
@@ -386,11 +440,11 @@ O gate fica **fora** do matrix porque o placar da NBA é global: rodá-lo por ti
 
 Destinatário não tem fallback de propósito: se tivesse, o relatório do time de outra pessoa cairia na caixa de entrada do dono do repositório.
 
-`send_telegram`/`send_email` devolvem `None` quando o canal não está configurado, e `notify` trata `None` como ignorado — só `False` (erro real) conta como falha. Sem isso, um time configurado só para email acusaria falha de Telegram em todo run.
+`send_telegram`/`send_email` devolvem `None` quando o canal não está configurado, e `notify` trata `None` como ignorado — só `False` (erro real) conta como falha. Sem isso, um usuário configurado só para email acusaria falha de Telegram em todo run.
 
 `_chat_id_set()` valida que o chat id é numérico (aceitando negativo para grupos), para que um placeholder como `XXX` no `.env` não vire tentativa de envio com erro.
 
-**Rodando local**, a lista também vale: `_env_first()` usa a primeira posição de `ESPN_TEAM_ID` (com o mesmo tratamento de separadores), e `send_email` aceita `,` e `;` — então `EMAIL_TO` com vários endereços manda para todos, sem noção de posição.
+**Rodando local**, `_env_first()` usa a primeira posição de `ESPN_TEAM_ID` (com o mesmo tratamento de separadores), e `send_email` aceita `,` e `;` — então `EMAIL_TO` com vários endereços manda para todos, sem noção de posição.
 
 ### 5.12 Cache
 
@@ -519,7 +573,9 @@ EMAIL_TO=
 | Fator de cenário | 0,7 da sorte revertida ± 0,25 do desvio | `scenario_points` |
 | Remoções na escalação | ≤ número de reservas aptos | `plan_lineup_changes` |
 | Folga de elenco na troca | +2 jogadores | `trade_legal` |
-| Times por execução | 1 por entrada de `ESPN_TEAM_ID` | workflow |
+| Times por execução | 1 por usuário ativo no banco | `teams.load_users` |
+| Tentativas de conexão ao banco | 3 (Neon hiberna) | `teams.load_from_db` |
+| Fallback de fonte | banco se `DATABASE_URL`, senão secrets | `teams.load_users` |
 | Job do gate | 1 por execução (não por time) | workflow |
 
 ---

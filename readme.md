@@ -44,6 +44,10 @@ O relatorio e salvo em `reports/relatorio_AAAA-MM-DD.md`.
 
 ## 4. Credenciais do ESPN (obrigatorio)
 
+Ha dois caminhos. **Com o painel**, as credenciais da liga ficam no banco e o
+`teams.py resolve` as injeta na execucao — nenhum secret de ESPN no Actions.
+**Sem o painel**, elas vao no `.env`.
+
 1. Copie `.env.example` para `.env`.
 2. `ESPN_LEAGUE_ID`: o numero `leagueId=...` na URL da sua liga.
 3. `ESPN_TEAM_ID`: o numero `teamId=...` na URL do seu time.
@@ -151,13 +155,19 @@ diferentes, voce recebe tres emails — um por jogo, no momento de cada um.
 
 ### Configurar (uma vez, no GitHub)
 
-1. **Settings > Secrets and variables > Actions > Secrets**: adicione
-   `ESPN_LEAGUE_ID`, `ESPN_SWID`, `ESPN_S2`, `TELEGRAM_TOKEN`, `SMTP_HOST`,
-   `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `EMAIL_FROM`. Depois os tres
-   posicionais: `ESPN_TEAM_ID`, `EMAIL_TO` e `TELEGRAM_CHAT_ID` (veja abaixo).
+1. **Settings > Secrets and variables > Actions > Secrets**:
+   - **`DATABASE_URL`** — connection string do Neon (com `-pooler`). E a fonte da
+     lista de usuarios; sem ela o projeto volta ao modo de listas posicionais.
+   - Envio: `TELEGRAM_TOKEN`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`,
+     `SMTP_PASS`, `EMAIL_FROM`.
+   - **Nao** precisa mais de `ESPN_LEAGUE_ID`/`ESPN_SWID`/`ESPN_S2`: as
+     credenciais vem do banco, por liga.
 2. **Aba Variables**: opcionalmente `EMAIL_FROM_NAME` (nome do remetente).
-   Nao precisa de `ROSTER_CSV`: o elenco vem do ESPN pelo `ESPN_TEAM_ID`.
 3. **Actions > NBA Fantasy > Run workflow** com `mode = morning` para testar.
+
+Antes do primeiro run, cadastre a liga e os usuarios no painel (veja
+`panel/README.md`). O `teams.py matrix` aborta com mensagem clara se o banco
+estiver vazio ou se alguma liga estiver sem cookie do ESPN.
 
 **Versoes fixadas.** O workflow usa `ubuntu-24.04` (nao `ubuntu-latest`, que esta
 migrando de versao) e actions em `v7`, todas rodando em Node 24. O
@@ -166,10 +176,35 @@ nao voltar a acumular runtime depreciado.
 
 ### Varios times, um relatorio por dono
 
-Os times vem de **listas posicionais** nos secrets. A ordem e o pareamento: a
-posicao N de `ESPN_TEAM_ID` e o time que envia para a posicao N de `EMAIL_TO` e
-de `TELEGRAM_CHAT_ID`. Nao ha limite de quantidade: adicionar uma pessoa e' so
-acrescentar mais uma entrada nas tres listas.
+A lista de quem recebe vem do **banco de dados** (o painel em `panel/`). Cada
+usuario ativo e um job, com o proprio `team_id`, e-mail, Telegram e nome — nao
+ha limite de quantidade nem ordem a manter.
+
+```mermaid
+flowchart LR
+    DB[("Neon: users + leagues")] --> T["job times<br/>python3 teams.py matrix"]
+    T --> M["matrix: [{index, name}]"]
+    M --> A1["job agente #0"]
+    M --> A2["job agente #1"]
+    M --> A3["job agente #N"]
+```
+
+O `teams.py matrix` seleciona apenas `users.is_active AND users.deleted_at IS NULL`
+de `leagues` tambem ativas. Desativar alguem no painel basta para ele sair do
+proximo run — sem mexer em secret.
+
+| Secret | Papel |
+|---|---|
+| **`DATABASE_URL`** | connection string do Neon. **E a fonte da lista** |
+| `TELEGRAM_TOKEN`, `SMTP_*`, `EMAIL_FROM` | envio (compartilhados) |
+
+As credenciais do ESPN (`ESPN_LEAGUE_ID`, `ESPN_SWID`, `ESPN_S2`) **saem do
+banco**, por liga. Isso significa que o mesmo run pode atender usuarios de
+**ligas diferentes**, cada um com os proprios cookies.
+
+#### Modo legado (sem banco)
+
+Se `DATABASE_URL` nao existir, o projeto volta a usar as listas posicionais:
 
 ```dotenv
 ESPN_TEAM_ID=7,9,11
@@ -177,48 +212,38 @@ EMAIL_TO=marcos@exemplo.com,amigo@exemplo.com,outro@exemplo.com
 TELEGRAM_CHAT_ID=123456789,XXX,987654321
 ```
 
-| Secret | Papel |
+A ordem e o pareamento: posicao N de `ESPN_TEAM_ID` pareia com a posicao N dos
+destinatarios. O formato e' tolerante (virgula final, espacos e quebra de linha
+sao normalizados; entradas vazias descartadas), e `XXX` ou vazio em
+`TELEGRAM_CHAT_ID` desliga o Telegram daquele time.
+
+**Sem nome cadastrado nao ha saudacao personalizada** — o email sai como antes,
+sem a linha "Oi, fulano".
+
+#### Precedencia, sem fallback silencioso
+
+| Situacao | Comportamento |
 |---|---|
-| `ESPN_TEAM_ID` | `teamId=` na URL de cada time. **Define o tamanho da lista** |
-| `EMAIL_TO` | destinatario de cada time. Entrada vazia = nao envia email |
-| `TELEGRAM_CHAT_ID` | chat de cada time. Vazio ou nao numerico = nao envia |
+| `DATABASE_URL` definida e responde | usa o banco |
+| `DATABASE_URL` definida e o banco falha | **aborta com erro explicito** |
+| `DATABASE_URL` ausente | usa os secrets posicionais |
+| Nenhuma das duas | aborta pedindo configuracao |
+| Banco sem nenhum usuario ativo | aborta pedindo cadastro |
 
-`ESPN_TEAM_ID` e quem manda no tamanho porque sem time nao ha o que analisar. Se
-`EMAIL_TO` ou `TELEGRAM_CHAT_ID` tiver menos entradas, os times que sobram ficam
-sem aquele canal — o job roda e apenas nao notifica por ele. Sobrando entradas,
-as extras sao ignoradas com aviso no log.
+O banco **nao** cai para os secrets quando falha, de proposito: uma lista velha
+notificaria as pessoas erradas sem ninguem perceber. Melhor o job ficar vermelho
+e visivel.
 
-**O formato da lista e' tolerante**: virgula final, espacos depois da virgula e
-quebra de linha (comum ao colar no campo de secret do GitHub) sao normalizados,
-e entradas vazias sao descartadas. `7,9,11,` e `7\n9\n11` viram os mesmos 3
-times. A normalizacao fica em `teams.py`, usado tanto pelo job que monta o
-matrix quanto pelo job do agente — antes as duas pontas usavam parsers diferentes
-e discordavam justamente nesses formatos.
-
-**Placeholder `XXX` funciona como "nao configurado".** O chat id do Telegram e
-sempre numerico (grupos usam negativo), entao qualquer outra coisa e ignorada
-com um aviso. Da para deixar `XXX` no secret e trocar depois quando a pessoa
-mandar `/start` no bot.
-
-Para varios destinatarios **no mesmo time**, use `;` dentro da posicao:
-
-```dotenv
-EMAIL_TO=marcos@x.com;esposa@x.com,amigo@y.com
-```
-
-**Entrada vazia nunca herda o destinatario de outro time** — e de proposito:
-sem isso, o relatorio de uma pessoa cairia na caixa de entrada de outra.
-
-Localmente (`.env`), a lista tambem funciona: o agente usa a **primeira**
-posicao de `ESPN_TEAM_ID` e envia para todos os enderecos de `EMAIL_TO`.
+Para varios destinatarios **no mesmo usuario**, use `;` no campo de e-mail do
+painel. Entrada vazia nunca herda o destinatario de outro usuario.
 
 No Actions, o fluxo tem tres jobs:
 
 | Job | Quantos | O que faz |
 |---|---|---|
 | `gate` | 1 | decide se ha jogo na janela; se nao, nada mais roda |
-| `times` | 1 | roda `teams.py matrix` e expoe os indices |
-| `agente` | 1 por time | roda `teams.py resolve <indice>` e a analise |
+| `times` | 1 | `teams.py matrix` → consulta o banco e monta o matrix `[{index, name}]` |
+| `agente` | 1 por usuario | `teams.py resolve <indice>` → analise e envio |
 
 O gate fica **fora** do matrix de proposito: o placar da NBA e o mesmo para
 todos, entao nao faz sentido pagar um spin-up por time para descobrir que nao ha
