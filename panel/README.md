@@ -61,7 +61,8 @@ liga ou um time depois de excluido nao e bloqueado pelo registro antigo.
 
 `suggestions` nao tem FK nem relacao com `users`: o formulario e' publico, entao
 quem escreve nao precisa estar cadastrado. Guardamos apenas o nome e o texto
-digitados — sem IP, sem user-agent, sem cookie.
+digitados — sem IP, sem user-agent, sem cookie. O cookie de acesso ao formulario
+(`nba_sug_key`) so guarda um token derivado da chave: nao identifica ninguem.
 
 ## Rodar local
 
@@ -81,8 +82,8 @@ export SUGGESTION_KEY=$(python3 -c 'import secrets;print(secrets.token_urlsafe(2
 python init_db.py                      # aplica o schema
 uvicorn app:app --reload --port 8000   # abre em http://127.0.0.1:8000
 
-# o formulario publico (sem login) fica em:
-#   http://127.0.0.1:8000/sugestoes?k=$SUGGESTION_KEY
+# o formulario publico (pede a chave na tela de entrada) fica em:
+#   http://127.0.0.1:8000/sugestoes
 ```
 
 ---
@@ -181,14 +182,16 @@ para criar a liga primeiro.
 
 ## Formulario publico de sugestoes
 
-Uma unica rota fica fora do Basic Auth: `GET/POST /sugestoes`.
+O prefixo `/sugestoes` (e tudo abaixo dele) fica fora do Basic Auth. No lugar do
+login, ele pede uma **chave**.
 
 ```
-https://seu-projeto.vercel.app/sugestoes?k=<SUGGESTION_KEY>
+https://seu-projeto.vercel.app/sugestoes
 ```
 
-Quem recebe esse link manda sugestao sem criar conta. As respostas aparecem em
-`/suggestions` (autenticado), na aba **Sugestoes** do menu.
+Abrir esse endereco mostra uma tela de entrada com um campo de chave (mascarado,
+com botao *mostrar*). Ao acertar, um cookie assinado e' gravado e a pessoa passa
+a ver o formulario direto — so digita a chave uma vez por navegador.
 
 Gerar a chave:
 
@@ -196,30 +199,71 @@ Gerar a chave:
 python3 -c 'import secrets;print(secrets.token_urlsafe(24))'
 ```
 
-Regras da chave — o formulario se **desliga** se alguma falhar:
+O link com a chave embutida tambem funciona, para mandar de uma vez so:
+
+```
+https://seu-projeto.vercel.app/sugestoes?k=<SUGGESTION_KEY>
+```
+
+Nesse caso a chave e' validada, o cookie e' gravado e o navegador e'
+redirecionado para `/sugestoes` **sem** a chave — assim ela nao fica no historico
+nem e' repassada junto quando a pessoa compartilhar o endereco.
+
+### Regras da chave
+
+O formulario se **desliga** (503, com o motivo na tela) se alguma falhar:
 
 | Regra | Por que |
 |---|---|
 | minimo 16 caracteres | um POST aberto com chave de 4 digitos e' forcavel |
-| so `A-Z a-z 0-9 . _ ~ -` | a chave viaja na URL; `+` viraria espaco e o link daria 403 sem explicacao |
+| so `A-Z a-z 0-9 . _ ~ -` | a chave pode ir na URL; `+` viraria espaco e o link daria erro sem explicacao |
 | variavel ausente | fail closed, igual ao resto do painel |
 
-O que a rota faz e o que **nao** faz:
+### O cookie
+
+| Atributo | Valor | Motivo |
+|---|---|---|
+| nome | `nba_sug_key` | — |
+| valor | HMAC-SHA256 da chave | nao da para derivar a chave a partir dele |
+| `HttpOnly` | sim | o JS da pagina nao precisa ler |
+| `SameSite` | `Lax` | POST vindo de outro site nao carrega o cookie |
+| `Path` | `/sugestoes` | nao acompanha `/users`, `/leagues`, `/health` |
+| `Max-Age` | 30 dias | — |
+| `Secure` | conforme o esquema | ver abaixo |
+
+O token e' derivado da propria `SUGGESTION_KEY`, entao **trocar a chave derruba
+todos os acessos ja concedidos** de uma vez. E' o botao de "sair de todo mundo",
+sem tabela de sessoes e sem um segundo segredo para assinar.
+
+`Secure` e' decidido por request (`X-Forwarded-Proto`, senao
+`request.url.scheme`). Marcar `Secure` numa conexao que o navegador considera
+http faz ele **descartar o cookie em silencio** — a pessoa entraria num ciclo de
+pedir a chave para sempre.
+
+### O que a rota faz e o que **nao** faz
 
 - valida a chave com `hmac.compare_digest` (tempo constante)
 - limita nome a 120 e sugestao a 4000 caracteres, no app **e** no `CHECK` do banco
 - tem honeypot (`website`): robo recebe tela de sucesso e nada e' gravado
 - devolve o texto digitado quando a validacao falha (ninguem perde o que escreveu)
 - usa PRG (redirect apos POST): recarregar nao duplica o registro
+- se o cookie expirar no meio de um envio, volta a tela de chave avisando — em vez
+  de um 403 seco
 - **nao** tem rate limit. Uma chave vazada permite encher a tabela; nesse caso
-  troque a `SUGGESTION_KEY` (invalida o link antigo na hora) e exclua o lixo
+  troque a `SUGGESTION_KEY` (invalida tudo na hora) e exclua o lixo
 - **nao** manda e-mail nem notificacao quando chega sugestao. Veja em
   `/suggestions` — o contador de nao lidas fica no topo
 
-O `?k=` tambem fica visivel no HTML da pagina (no `action` do form). Isso e'
-inerente ao desenho: quem tem o link tem a chave. Se um dia precisar de algo
-mais forte, o caminho e' trocar a chave por um cookie assinado emitido no
-primeiro acesso.
+### Rotas
+
+| Metodo | Caminho | Autenticacao | O que faz |
+|---|---|---|---|
+| `GET` | `/sugestoes` | cookie (ou `?k=`) | tela de chave ou formulario |
+| `POST` | `/sugestoes` | a chave no corpo | valida a chave, grava o cookie |
+| `POST` | `/sugestoes/enviar` | cookie | grava a sugestao |
+| `GET` | `/suggestions` | Basic Auth | listagem do admin |
+
+`/sugestoesX` **nao** herda a isencao: o match do prefixo exige a barra.
 
 ## O que **nao** esta implementado ainda
 

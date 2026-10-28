@@ -1,0 +1,117 @@
+<!doctype html>
+<!--
+  Tela de entrada do formulario de sugestoes: pede a chave no lugar de
+  usuario/senha. Autocontida (nao estende base.html) pelo mesmo motivo do
+  formulario — quem chega aqui e' convidado, nao administrador.
+
+  O campo e' `type=password` para a chave nao ficar legivel para quem estiver
+  olhando por cima do ombro, mas tem um "mostrar" ao lado: digitar 32 caracteres
+  as cegas no celular e' o caminho mais curto para errar.
+-->
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Entrar · NBA Fantasy</title>
+<style>
+  :root {
+    --bg:#0a0d13; --card:#141a24; --soft:#1b2230; --line:#242e3d;
+    --ink:#eef2f8; --muted:#8b96a8; --orange:#f97316;
+    --red-bg:#2a1417; --red:#f87171;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; min-height:100vh; background:var(--bg); color:var(--ink);
+    font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    display:flex; align-items:flex-start; justify-content:center; padding:40px 16px;
+  }
+  main { width:100%; max-width:420px; }
+  .brand { color:var(--orange); font-weight:700; letter-spacing:1.6px;
+           text-transform:uppercase; font-size:11px; display:block; margin-bottom:14px; }
+  h1 { font-size:21px; margin:0 0 6px; }
+  .sub { color:var(--muted); font-size:13px; margin-bottom:22px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px;
+          padding:24px; }
+  label { display:block; font-size:11px; text-transform:uppercase; letter-spacing:.6px;
+          color:var(--muted); margin-bottom:6px; font-weight:600; }
+  .row { position:relative; }
+  input[type=password], input[type=text] {
+    width:100%; padding:10px 58px 10px 12px; border-radius:8px;
+    border:1px solid var(--line); background:var(--soft); color:var(--ink);
+    font:inherit; letter-spacing:.4px;
+  }
+  input[type=password]:focus, input[type=text]:focus {
+    outline:none; border-color:var(--orange);
+  }
+  /* Alterna entre mascarado e visivel. Fica dentro do campo, alinhado a direita. */
+  .reveal {
+    position:absolute; right:8px; top:50%; transform:translateY(-50%);
+    background:none; border:0; color:var(--muted); font:inherit; font-size:11px;
+    font-weight:700; text-transform:uppercase; letter-spacing:.5px;
+    cursor:pointer; padding:6px 8px; border-radius:6px;
+  }
+  .reveal:hover { color:var(--ink); }
+  .btn {
+    width:100%; margin-top:18px; padding:11px 16px; border-radius:8px;
+    border:1px solid var(--orange); background:var(--orange); color:#1a0d02;
+    font:inherit; font-weight:700; font-size:14px; cursor:pointer;
+  }
+  .btn:hover { filter:brightness(1.07); }
+  .err { padding:12px 15px; border-radius:8px; margin-bottom:18px; font-size:13px;
+         background:var(--red-bg); color:var(--red); border-left:3px solid var(--red); }
+  .hint { color:var(--muted); font-size:11px; margin-top:10px; }
+  footer { color:var(--muted); font-size:11px; text-align:center; margin-top:18px; }
+  /* O Safari do iOS da zoom ao focar campo com menos de 16px e nao volta. */
+  @media (max-width:760px) {
+    input[type=password], input[type=text] { font-size:16px; }
+    body { padding:24px 14px; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <span class="brand">NBA Fantasy</span>
+  <h1>Formulario de sugestoes</h1>
+  <div class="sub">Digite a chave que voce recebeu para abrir o formulario.</div>
+
+  {% if err %}<div class="err">{{ err }}</div>{% endif %}
+
+  <div class="card">
+    <form method="post" action="{{ '/sugestoes' }}" novalidate>
+      <label for="chave">Chave de acesso</label>
+      <div class="row">
+        <input id="chave" name="chave" type="password" required
+               autocomplete="off" autocapitalize="off" spellcheck="false"
+               autofocus placeholder="cole ou digite a chave">
+        <button class="reveal" type="button" id="toggle"
+                aria-controls="chave" aria-pressed="false">mostrar</button>
+      </div>
+      <div class="hint">
+        Minimo de {{ min_len }} caracteres. Fica salvo neste navegador, entao
+        voce so digita uma vez.
+      </div>
+      <button class="btn" type="submit">Entrar</button>
+    </form>
+  </div>
+
+  <footer>Sem conta e sem senha: a chave e o unico acesso.</footer>
+</main>
+
+<script>
+  // Mostrar/ocultar a chave. Sem isto, um typo em 32 caracteres mascarados
+  // obriga a apagar tudo e comecar de novo.
+  (function () {
+    var input = document.getElementById('chave');
+    var btn = document.getElementById('toggle');
+    btn.addEventListener('click', function () {
+      var hidden = input.type === 'password';
+      input.type = hidden ? 'text' : 'password';
+      btn.textContent = hidden ? 'ocultar' : 'mostrar';
+      btn.setAttribute('aria-pressed', String(hidden));
+      input.focus();
+    });
+  })();
+</script>
+</body>
+</html>

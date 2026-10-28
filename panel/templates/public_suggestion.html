@@ -6,8 +6,8 @@
   Ligas) e quem chega aqui foi convidado por link, nao e' administrador. Ficando
   autocontida, nenhum link interno vaza para o cliente.
 
-  A chave chega por `?k=` e vai junto no `action` do form — e' ela que autoriza
-  o POST. Quem tem o link tem a chave: isso e' esperado neste desenho.
+  O acesso e' controlado por cookie (gravado na tela de chave). O formulario
+  posta em /sugestoes/enviar, que exige esse cookie.
 -->
 <html lang="pt-BR">
 <head>
@@ -84,7 +84,7 @@
   {% if err %}<div class="err">{{ err }}</div>{% endif %}
 
   <div class="card">
-    <form method="post" action="{{ '/sugestoes?k=' ~ k|urlencode }}" novalidate>
+    <form method="post" action="/sugestoes/enviar" novalidate>
       <div class="field">
         <label for="name">Nome</label>
         <input id="name" name="name" type="text" required
@@ -113,7 +113,7 @@
     </form>
   </div>
 
-  <footer>Este link e pessoal. Nao e necessario criar conta nem senha.</footer>
+  <footer>Seu acesso fica salvo neste navegador. Nao e necessario criar conta.</footer>
 </main>
 </body>
 </html>

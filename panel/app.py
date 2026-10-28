@@ -11,6 +11,7 @@ arquivos de entrypoint (app.py, main.py, api/index.py...).
 from __future__ import annotations
 
 import base64
+import hashlib
 import hmac
 import html
 import os
@@ -38,7 +39,7 @@ def _creds() -> tuple[str, str]:
     return (os.getenv("PANEL_USER") or "").strip(), (os.getenv("PANEL_PASSWORD") or "")
 
 
-# Rota publica: quem tem o link nao precisa de login. Ela valida uma chave
+# Rota publica: quem tem a chave nao precisa de login. Ela valida uma chave
 # propria (SUGGESTION_KEY) dentro do handler — ver `_key_ok`.
 PUBLIC_FORM_PATH = "/sugestoes"
 
@@ -47,11 +48,19 @@ PUBLIC_FORM_PATH = "/sugestoes"
 # vez de fingir que esta protegido.
 MIN_KEY_LEN = 16
 
-# A chave viaja na URL, entao restringimos o alfabeto ao que sobrevive ao
-# trajeto sem escape: letras, numeros e `. _ ~ -` (o mesmo alfabeto que
-# `secrets.token_urlsafe` gera). Sem isso, uma chave com `+` viraria espaco ao
-# ser lida da query string e o link daria 403 sem explicacao obvia.
+# A chave tambem pode chegar pela URL (`?k=`), entao restringimos o alfabeto ao
+# que sobrevive ao trajeto sem escape: letras, numeros e `. _ ~ -` (o mesmo
+# alfabeto que `secrets.token_urlsafe` gera). Sem isso, uma chave com `+`
+# viraria espaco ao ser lida da query string e o link daria erro sem explicacao.
 KEY_RE = re.compile(r"^[A-Za-z0-9._~-]+$")
+
+# Depois de acertar a chave, ela fica num cookie assinado para a pessoa nao
+# digitar de novo a cada visita. O token e' derivado da PROPRIA chave: trocar a
+# SUGGESTION_KEY invalida todos os cookies emitidos antes, sem precisar de
+# tabela de sessoes nem de um segundo segredo para assinar.
+COOKIE_NAME = "nba_sug_key"
+COOKIE_MAX_AGE = 60 * 60 * 24 * 30          # 30 dias
+COOKIE_SALT = b"nba-fantasy-sugestoes-v1"
 
 
 def _suggestion_key() -> str:
@@ -73,7 +82,7 @@ def _key_problem() -> str:
 
 
 def _key_ok(supplied: str) -> bool:
-    """Compara a chave do link com a do ambiente.
+    """Compara a chave digitada com a do ambiente.
 
     `compare_digest` evita distinguir acerto de erro pelo tempo de resposta.
     Chave ausente ou invalida nunca autoriza (fail closed): um deploy esquecido
@@ -82,6 +91,60 @@ def _key_ok(supplied: str) -> bool:
     if _key_problem():
         return False
     return hmac.compare_digest((supplied or "").strip(), _suggestion_key())
+
+
+def _cookie_token() -> str:
+    """Token do cookie, derivado da chave vigente.
+
+    Como o segredo e' a propria SUGGESTION_KEY, rotacionar a chave derruba de
+    uma vez todos os acessos ja concedidos — e' o botao de "sair de todo mundo".
+    """
+    return hmac.new(_suggestion_key().encode("utf-8"), COOKIE_SALT,
+                    hashlib.sha256).hexdigest()
+
+
+def _cookie_ok(request: Request) -> bool:
+    """A pessoa ja digitou a chave neste navegador?"""
+    if _key_problem():
+        return False
+    got = request.cookies.get(COOKIE_NAME) or ""
+    return bool(got) and hmac.compare_digest(got, _cookie_token())
+
+
+def _is_https(request: Request) -> bool:
+    """O navegador chegou por HTTPS?
+
+    `request.url.scheme` sozinho nao basta: atras do proxy do Vercel o ASGI ve
+    `http`. Se marcarmos o cookie como `secure` numa conexao que o navegador
+    considera http, ele descarta o cookie em silencio e a pessoa entra num
+    ciclo de pedir a chave para sempre.
+    """
+    proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
+    return proto == "https" or request.url.scheme == "https"
+
+
+def _grant(resp: Response, request: Request) -> Response:
+    """Grava o cookie de acesso no redirect de sucesso."""
+    resp.set_cookie(
+        COOKIE_NAME,
+        _cookie_token(),
+        max_age=COOKIE_MAX_AGE,
+        httponly=True,          # o JS da pagina nao precisa (nem deve) ler isto
+        samesite="lax",         # POST de outro site nao manda o cookie
+        secure=_is_https(request),
+        path=PUBLIC_FORM_PATH,  # nao vai junto em /users, /leagues, /health
+    )
+    return resp
+
+
+def _is_public_path(raw_path: str) -> bool:
+    """`/sugestoes` e tudo abaixo dela ficam fora do Basic Auth.
+
+    Restrito ao prefixo com barra: `/sugestoesX` continua exigindo login, em vez
+    de herdar a isencao por um `startswith` frouxo.
+    """
+    path = raw_path.rstrip("/") or "/"
+    return path == PUBLIC_FORM_PATH or path.startswith(PUBLIC_FORM_PATH + "/")
 
 
 @app.middleware("http")
@@ -93,11 +156,10 @@ async def require_auth(request: Request, call_next):
     painel nao atende nada, em vez de abrir.
 
     A excecao vem ANTES da checagem de credencial porque o formulario tem
-    autenticacao propria e precisa continuar de pe mesmo se PANEL_USER estiver
-    faltando. O `rstrip("/")` garante que `/sugestoes/` caia na mesma regra em
-    vez de vazar para o 401.
+    autenticacao propria (a chave) e precisa continuar de pe mesmo se
+    PANEL_USER estiver faltando.
     """
-    if (request.url.path.rstrip("/") or "/") == PUBLIC_FORM_PATH:
+    if _is_public_path(request.url.path):
         return await call_next(request)
 
     user, password = _creds()
@@ -343,66 +405,95 @@ def league_restore(league_id: int):
 
 
 # --------------------------------------------------------------------------
-# Sugestoes — formulario PUBLICO (sem login, protegido por chave)
+# Sugestoes — formulario PUBLICO (chave no lugar do login)
 # --------------------------------------------------------------------------
-def _public_page(request: Request, k: str, *, values: dict, err: str = "",
+# Fluxo: abrir `/sugestoes` mostra a tela de chave (parecida com login). Ao
+# acertar, o cookie assinado e' gravado e a pessoa passa a ver o formulario
+# direto nas proximas visitas. Um link com `?k=<chave>` tambem funciona: ele
+# valida, grava o cookie e redireciona para a URL limpa, para a chave nao
+# passe adiante quando a pessoa compartilhar o endereco.
+def _page(name: str, request: Request, status_code: int = 200, **ctx) -> Response:
+    return templates.TemplateResponse(request, name, ctx, status_code=status_code)
+
+
+def _key_page(request: Request, *, err: str = "",
+              status_code: int = 200) -> Response:
+    return _page("key_gate.html", request, status_code, err=err,
+                 min_len=MIN_KEY_LEN)
+
+
+def _public_page(request: Request, *, values: dict, err: str = "",
                  ok: bool = False, status_code: int = 200) -> Response:
-    """Renderiza o formulario publico. `TemplateResponse` ja e' um Response."""
-    return templates.TemplateResponse(
-        request,
-        "public_suggestion.html",
-        {
-            "k": k,
-            "values": values,
-            "err": err,
-            "ok": ok,
-            "max_name": db.MAX_SUGGESTION_NAME,
-            "max_body": db.MAX_SUGGESTION_BODY,
-        },
-        status_code=status_code,
+    return _page(
+        "public_suggestion.html", request, status_code,
+        values=values,
+        err=err,
+        ok=ok,
+        max_name=db.MAX_SUGGESTION_NAME,
+        max_body=db.MAX_SUGGESTION_BODY,
+    )
+
+
+def _disabled(problem: str) -> HTMLResponse:
+    """Formulario desligado por configuracao — vale a pena explicar o motivo."""
+    print(f"sugestoes: formulario desligado — {problem}", file=sys.stderr)
+    return HTMLResponse(
+        "<h1>Formulario desligado</h1>"
+        f"<p>{html.escape(problem)}</p>"
+        "<p>Gere uma chave com:<br><code>python3 -c &quot;import secrets;"
+        "print(secrets.token_urlsafe(24))&quot;</code></p>",
+        status_code=503,
     )
 
 
 @app.get(PUBLIC_FORM_PATH, response_class=HTMLResponse)
 def suggestion_form(request: Request, k: str = "", ok: str = ""):
-    """Formulario aberto para quem tem o link.
-
-    Tres estados: chave nao configurada/invalida (503, formulario desligado),
-    chave errada (403) e chave certa (o formulario).
-    """
+    """Tela de chave ou formulario, conforme o cookie deste navegador."""
     problem = _key_problem()
     if problem:
-        print(f"sugestoes: formulario desligado — {problem}", file=sys.stderr)
-        return HTMLResponse(
-            "<h1>Formulario desligado</h1>"
-            f"<p>{problem}</p>"
-            "<p>Gere uma chave com:<br><code>python3 -c &quot;import secrets;"
-            "print(secrets.token_urlsafe(24))&quot;</code></p>",
-            status_code=503,
-        )
-    if not _key_ok(k):
-        return HTMLResponse(
-            "<h1>Link invalido</h1>"
-            "<p>Confira o endereco completo, incluindo o trecho depois de "
-            "<code>?k=</code>.</p>",
-            status_code=403,
-        )
-    return _public_page(request, k, values={"name": "", "body": ""},
-                        ok=ok == "1")
+        return _disabled(problem)
+
+    if k:
+        # Link de acesso direto. Acertou: grava o cookie e sai da URL com a
+        # chave, para ela nao ficar no historico nem ser repassada adiante.
+        if _key_ok(k):
+            return _grant(
+                RedirectResponse(PUBLIC_FORM_PATH, status_code=303), request)
+        return _key_page(request, err="Chave incorreta.", status_code=401)
+
+    if not _cookie_ok(request):
+        return _key_page(request)
+
+    return _public_page(request, values={"name": "", "body": ""}, ok=ok == "1")
 
 
 @app.post(PUBLIC_FORM_PATH, response_class=HTMLResponse)
+def suggestion_login(request: Request, chave: str = Form("")):
+    """Valida a chave digitada na tela de entrada."""
+    problem = _key_problem()
+    if problem:
+        return _disabled(problem)
+    if not _key_ok(chave):
+        return _key_page(request, err="Chave incorreta. Confira e tente de novo.",
+                         status_code=401)
+    return _grant(RedirectResponse(PUBLIC_FORM_PATH, status_code=303), request)
+
+
+@app.post(PUBLIC_FORM_PATH + "/enviar", response_class=HTMLResponse)
 def suggestion_submit(
     request: Request,
-    k: str = "",
     name: str = Form(""),
     body: str = Form(""),
     website: str = Form(""),
 ):
     if _key_problem():
         return HTMLResponse("<h1>Formulario desligado</h1>", status_code=503)
-    if not _key_ok(k):
-        return HTMLResponse("<h1>Link invalido</h1>", status_code=403)
+    if not _cookie_ok(request):
+        # Cookie expirou (ou o navegador comeu). Pedimos a chave de novo com um
+        # aviso — sem isso a pessoa veria so um erro generico e perderia o texto.
+        return _key_page(
+            request, status_code=401,
+            err="Sua sessao expirou. Digite a chave para enviar de novo.")
 
     name, body = name.strip(), body.strip()
     values = {"name": name, "body": body}
@@ -411,21 +502,21 @@ def suggestion_submit(
     # preenche. Se veio preenchido e' robo — respondemos como sucesso para nao
     # ensinar o que ajustar, mas nao gravamos nada.
     if website.strip():
-        return go(f"{PUBLIC_FORM_PATH}?k={quote(k)}&ok=1")
+        return go(f"{PUBLIC_FORM_PATH}?ok=1")
 
     if not name:
-        return _public_page(request, k, values=values,
+        return _public_page(request, values=values,
                             err="Informe seu nome.", status_code=400)
     if len(name) > db.MAX_SUGGESTION_NAME:
         return _public_page(
-            request, k, values=values, status_code=400,
+            request, values=values, status_code=400,
             err=f"O nome passa de {db.MAX_SUGGESTION_NAME} caracteres.")
     if not body:
-        return _public_page(request, k, values=values,
+        return _public_page(request, values=values,
                             err="Escreva sua sugestao.", status_code=400)
     if len(body) > db.MAX_SUGGESTION_BODY:
         return _public_page(
-            request, k, values=values, status_code=400,
+            request, values=values, status_code=400,
             err=f"A sugestao passa de {db.MAX_SUGGESTION_BODY} caracteres.")
 
     try:
@@ -436,11 +527,11 @@ def suggestion_submit(
         print(f"sugestao: falhou ao gravar ({type(exc).__name__})",
               file=sys.stderr)
         return _public_page(
-            request, k, values=values, status_code=500,
+            request, values=values, status_code=500,
             err="Nao foi possivel salvar agora. Tente novamente em instantes.")
 
     # PRG: recarregar a pagina nao reenvia o formulario.
-    return go(f"{PUBLIC_FORM_PATH}?k={quote(k)}&ok=1")
+    return go(f"{PUBLIC_FORM_PATH}?ok=1")
 
 
 # --------------------------------------------------------------------------
