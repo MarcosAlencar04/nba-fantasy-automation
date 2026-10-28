@@ -9,3 +9,8 @@ __pycache__/
 # painel
 panel/__pycache__/
 .panel-preview.html
+
+# promo (assets de divulgação gerados)
+promo/*.png
+promo/*.mp4
+promo/*.webm

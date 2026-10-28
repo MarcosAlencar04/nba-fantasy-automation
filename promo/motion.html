@@ -1,0 +1,1282 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NBA Fantasy · Motion de divulgação</title>
+<style>
+  :root{
+    --bg:#0a0d13; --card:#141a24; --soft:#1b2230; --line:#242e3d;
+    --ink:#eef2f8; --muted:#8b96a8; --orange:#f97316;
+    --green:#4ade80; --red:#f87171; --amber:#fbbf24; --blue:#60a5fa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:14px/1.5 Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  header{padding:18px 22px;border-bottom:1px solid var(--line);
+         display:flex;align-items:baseline;gap:16px;flex-wrap:wrap}
+  .brand{color:var(--orange);font-size:11px;font-weight:700;letter-spacing:2.2px;
+         text-transform:uppercase}
+  h1{margin:0;font-size:15px;font-weight:600}
+  .sub{color:var(--muted);font-size:12px}
+  main{max-width:1180px;margin:0 auto;padding:22px}
+  .stage{position:relative;background:#000;border:1px solid var(--line);
+         border-radius:10px;overflow:hidden;display:flex;justify-content:center}
+  canvas{display:block;max-width:100%;height:auto}
+  .ctrls{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:14px}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px}
+  button{background:var(--soft);border:1px solid var(--line);color:var(--ink);
+         padding:9px 15px;border-radius:7px;font:inherit;font-weight:600;
+         cursor:pointer}
+  button:hover{border-color:var(--muted)}
+  button.primary{background:var(--orange);border-color:var(--orange);color:#1a0d02}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  input[type=range]{flex:1;min-width:220px;accent-color:var(--orange)}
+  select{background:var(--soft);border:1px solid var(--line);color:var(--ink);
+         padding:9px 11px;border-radius:7px;font:inherit}
+  label.chk{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px}
+  .time{font-variant-numeric:tabular-nums;color:var(--muted);font-size:12px;
+        min-width:92px;text-align:right}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:10px;
+         padding:16px 18px;margin-top:18px}
+  .panel h2{margin:0 0 6px;font-size:13px;letter-spacing:.4px;text-transform:uppercase;
+            color:var(--muted)}
+  .drop{border:1px dashed var(--line);border-radius:9px;padding:18px;text-align:center;
+        color:var(--muted);font-size:12px;transition:.15s}
+  .drop.over{border-color:var(--orange);background:#1a1208;color:var(--ink)}
+  .drop img{max-height:120px;border-radius:6px;margin-top:10px}
+  .prog{height:6px;background:var(--soft);border-radius:99px;overflow:hidden;
+        margin-top:12px;display:none}
+  .prog.on{display:block}
+  .prog i{display:block;height:100%;width:0;background:var(--orange);
+          transition:width .12s linear}
+  .note{color:var(--muted);font-size:11px;margin-top:10px;line-height:1.6}
+  code{background:var(--soft);padding:1px 6px;border-radius:4px;font-size:11px}
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">NBA Fantasy</span>
+  <h1>Motion de divulgação</h1>
+  <span class="sub">36s · sem narração · vídeo baixável</span>
+</header>
+
+<main>
+  <div class="stage"><canvas id="cv" width="1920" height="1080"></canvas></div>
+
+  <div class="ctrls">
+    <button id="play" class="primary">▶ Tocar</button>
+    <input id="scrub" type="range" min="0" max="36" step="0.01" value="0">
+    <span class="time" id="time">0.00 / 35.00s</span>
+    <label class="chk"><input type="checkbox" id="loop" checked> loop</label>
+  </div>
+
+  <div class="row">
+    <select id="fmt">
+      <option value="16:9">16:9 · 1920×1080</option>
+      <option value="1:1">1:1 · 1080×1080</option>
+      <option value="9:16">9:16 · 1080×1920</option>
+    </select>
+    <button id="rec" class="primary">⤓ Baixar vídeo</button>
+    <button id="png">⤓ Baixar quadro atual</button>
+    <span class="sub" id="hint">a gravação roda em tempo real (36s) — deixe a aba à frente</span>
+  </div>
+  <div class="prog" id="prog"><i></i></div>
+
+  <div class="panel">
+    <h2>Print do email (opcional)</h2>
+    <div class="drop" id="drop">
+      Arraste um PNG/JPG do email real aqui para substituir o mock nas cenas 3 e 4.
+      <div class="note">Sem print, a animação usa uma réplica vetorial do email
+        (mesmas cores e layout do produto).</div>
+    </div>
+    <button id="clearImg" style="margin-top:10px">Remover print</button>
+  </div>
+
+  <div class="panel">
+    <h2>Atalhos</h2>
+    <div class="note">
+      <code>?t=8</code> na URL abre congelado em 8s (útil para conferir um frame).
+      <code>espaço</code> toca/pausa. <code>←</code>/<code>→</code> anda 1s.
+      <br>1:1 e 9:16 reaproveitam a composição 16:9 com moldura de marca
+      (letterbox). Para vertical nativo seria preciso um layout próprio.
+    </div>
+  </div>
+</main>
+
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+// Paleta e utilidades
+// ─────────────────────────────────────────────────────────────────────────────
+const C = {
+  bg:'#0a0d13', card:'#141a24', soft:'#1b2230', line:'#242e3d',
+  ink:'#eef2f8', muted:'#8b96a8', orange:'#f97316',
+  green:'#4ade80', red:'#f87171', amber:'#fbbf24', blue:'#60a5fa',
+};
+const W = 1920, H = 1080, DUR = 36;
+const FMT = { '16:9':[1920,1080], '1:1':[1080,1080], '9:16':[1080,1920] };
+
+const clamp01 = v => v < 0 ? 0 : v > 1 ? 1 : v;
+const lerp = (a,b,t) => a + (b-a)*t;
+const easeOut = t => 1 - Math.pow(1-t, 3);
+const easeInOut = t => t < .5 ? 4*t*t*t : 1 - Math.pow(-2*t+2,3)/2;
+const easeOutBack = t => { const c=1.70158; return 1 + (c+1)*Math.pow(t-1,3) + c*Math.pow(t-1,2); };
+/** progresso de t dentro de [a,b], já com clamp */
+const p = (t,a,b) => clamp01((t-a)/(b-a));
+/** fade in/out suave numa janela */
+const win = (t,a,b,fade=.25) =>
+  Math.min(clamp01((t-a)/fade), clamp01((b-t)/fade));
+
+/**
+ * Entrada da cena: 0 → 1 nos primeiros `d` segundos.
+ *
+ * Não usamos `win()` para as cenas porque ele esmaece o fim da cena atual
+ * ANTES de a próxima começar a aparecer — como o fundo é repintado a cada
+ * quadro, isso abre um instante de tela escura nas fronteiras (em t=32 dava
+ * preto). Com fadeIn, a cena nova entra POR CIMA da anterior, em crossfade.
+ */
+const fadeIn = (t, a, d=.35) => clamp01((t-a)/d);
+
+function txt(ctx, s, x, y, o={}){
+  ctx.save();
+  ctx.font = `${o.weight||500} ${o.size||32}px ${o.mono?'ui-monospace,monospace':'Inter,system-ui,sans-serif'}`;
+  ctx.fillStyle = o.color || C.ink;
+  ctx.textAlign = o.align || 'left';
+  ctx.textBaseline = o.base || 'alphabetic';
+  if (o.space && 'letterSpacing' in ctx) ctx.letterSpacing = o.space+'px';
+  if (o.alpha != null) ctx.globalAlpha *= o.alpha;
+  ctx.fillText(s, x, y);
+  ctx.restore();
+}
+
+function measure(ctx, s, o={}){
+  ctx.save();
+  ctx.font = `${o.weight||500} ${o.size||32}px Inter,system-ui,sans-serif`;
+  const w = ctx.measureText(s).width;
+  ctx.restore();
+  return w;
+}
+
+function rrect(ctx, x, y, w, h, r){
+  r = Math.min(r, w/2, h/2);
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.arcTo(x+w, y,   x+w, y+h, r);
+  ctx.arcTo(x+w, y+h, x,   y+h, r);
+  ctx.arcTo(x,   y+h, x,   y,   r);
+  ctx.arcTo(x,   y,   x+w, y,   r);
+  ctx.closePath();
+}
+
+function fillCard(ctx, x, y, w, h, r=16, bg=C.card, border=C.line){
+  rrect(ctx, x, y, w, h, r);
+  if (bg){ ctx.fillStyle = bg; ctx.fill(); }
+  if (border){ ctx.strokeStyle = border; ctx.lineWidth = 2; ctx.stroke(); }
+}
+
+function grid(ctx){
+  // textura sutil de fundo, dá profundidade sem poluir
+  ctx.save();
+  ctx.globalAlpha = .5;
+  ctx.strokeStyle = '#121821';
+  ctx.lineWidth = 1;
+  for (let x=0; x<W; x+=80){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
+  for (let y=0; y<H; y+=80){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+  ctx.restore();
+}
+
+function bgBase(ctx){
+  const g = ctx.createRadialGradient(W/2, H*0.42, 80, W/2, H/2, W*0.72);
+  g.addColorStop(0, '#111823');
+  g.addColorStop(1, C.bg);
+  ctx.fillStyle = g;
+  ctx.fillRect(0,0,W,H);
+  grid(ctx);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mock do email (réplica vetorial do produto real)
+// ─────────────────────────────────────────────────────────────────────────────
+const LINEUP = [
+  ['PG','J. Carter','OKC',38.4],
+  ['SG','A. Brooks','BOS',33.1],
+  ['SF','D. Reyes','DEN',30.7],
+  ['PF','M. Novak','LAL',29.2],
+  ['C','T. Ellis','MIA',27.8],
+  ['G','K. Ward','PHX',26.4],
+  ['F','R. Silva','NYK',24.9],
+  ['UTIL','L. Moreau','SAC',22.3],
+  ['UTIL','S. Park','ORL',20.6],
+  ['UTIL','C. Duarte','IND',19.1],
+];
+
+function emailMock(ctx, x, y, w, o={}) {
+  const s = w / 760;                       // escala relativa ao cartão de 760px
+  const CARD_H = 880;                      // altura real: o conteúdo passa de 830
+  const H0 = CARD_H * s;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(s, s);
+
+  // sombra
+  ctx.shadowColor = 'rgba(0,0,0,.65)';
+  ctx.shadowBlur = 60;
+  ctx.shadowOffsetY = 26;
+  fillCard(ctx, 0, 0, 760, CARD_H, 16, C.card, C.line);
+  ctx.shadowColor = 'transparent';
+
+  // header
+  ctx.fillStyle = C.soft;
+  ctx.fillRect(0,0,760,120);
+  ctx.fillStyle = C.line;
+  ctx.fillRect(0,119,760,1);
+
+  ctx.fillStyle = C.orange;
+  rrect(ctx, 34, 30, 44, 44, 11); ctx.fill();
+  txt(ctx,'NBA', 40, 60, {size:15, weight:800, color:'#1a0d02'});
+  txt(ctx,'NBA FANTASY', 92, 46, {size:10, weight:800, color:C.orange, space:2.4});
+  txt(ctx,'Lakers Fans', 92, 74, {size:21, weight:700, color:'#fff'});
+  txt(ctx,'28/10/2026 · Semana 27/10 - 02/11', 92, 96, {size:11, color:C.muted});
+
+  // faixa de stat
+  const stats = [['812','FP projetado'],['10','Titulares'],['22','Reposição']];
+  stats.forEach(([v,l],i)=>{
+    const cx = 127 + i*253;
+    txt(ctx, v, cx, 172, {size:30, weight:700, color: i===0?C.orange:C.ink, align:'center'});
+    txt(ctx, l, cx, 194, {size:9.5, weight:600, color:C.muted, align:'center', space:1.4});
+  });
+  ctx.fillStyle = C.line; ctx.fillRect(34,212,692,1);
+
+  // seção escalação
+  txt(ctx,'ESCALAÇÃO DE HOJE', 34, 242, {size:9.5, weight:800, color:C.muted, space:1.8});
+  LINEUP.forEach(([slot,name,team,fp], i)=>{
+    const ry = 258 + i*38;
+    ctx.fillStyle = C.bg; rrect(ctx, 34, ry, 62, 26, 7); ctx.fill();
+    txt(ctx, slot, 65, ry+18, {size:9.5, weight:800, color:C.orange, align:'center', space:.6});
+    txt(ctx, name, 108, ry+18, {size:12.5, weight:600, color:C.ink});
+    txt(ctx, team, 300, ry+18, {size:10, color:C.muted});
+    txt(ctx, fp.toFixed(1), 726, ry+18, {size:13, weight:700, color:C.orange, align:'right'});
+    // barra proporcional
+    ctx.fillStyle = C.soft;
+    rrect(ctx, 350, ry+8, 320, 8, 4); ctx.fill();
+    ctx.fillStyle = C.orange;
+    rrect(ctx, 350, ry+8, 320*(fp/40), 8, 4); ctx.fill();
+  });
+
+  // IR
+  const irY = 258 + 10*38 + 10;
+  txt(ctx,'IR E STATUS', 34, irY+12, {size:9.5, weight:800, color:C.muted, space:1.8});
+  ctx.fillStyle = '#2a1417'; rrect(ctx, 34, irY+22, 692, 56, 8); ctx.fill();
+  ctx.fillStyle = C.red; rrect(ctx, 34, irY+22, 4, 56, 2); ctx.fill();
+  txt(ctx,'M. Novak — ativar do IR', 50, irY+44, {size:12, weight:700, color:C.ink});
+  txt(ctx,'3 opções para abrir vaga:', 50, irY+64, {size:10, color:C.muted});
+  ['C. Duarte','S. Park','L. Moreau'].forEach((n,i)=>{
+    txt(ctx, '− '+n, 250 + i*150, irY+64, {size:10, weight:600, color:C.red});
+  });
+
+  // troca
+  const trY = irY + 92;
+  txt(ctx,'TROCA 2x1 · Time do João', 34, trY+8, {size:9.5, weight:800, color:C.muted, space:1.6});
+  // painel esquerdo
+  ctx.fillStyle = '#2a1417'; rrect(ctx, 34, trY+18, 306, 74, 9); ctx.fill();
+  txt(ctx,'VOCÊ ENTREGA', 48, trY+38, {size:8.5, weight:800, color:C.red, space:1.4});
+  txt(ctx,'K. Ward', 48, trY+58, {size:12, weight:600, color:C.ink});
+  txt(ctx,'R. Silva', 48, trY+76, {size:12, weight:600, color:C.ink});
+  // seta
+  ctx.strokeStyle = C.muted; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(352, trY+55); ctx.lineTo(402, trY+55); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(394, trY+49); ctx.lineTo(404, trY+55); ctx.lineTo(394, trY+61); ctx.stroke();
+  // painel direito
+  ctx.fillStyle = '#10281c'; rrect(ctx, 420, trY+18, 306, 74, 9); ctx.fill();
+  txt(ctx,'VOCÊ RECEBE', 434, trY+38, {size:8.5, weight:800, color:C.green, space:1.4});
+  txt(ctx,'T. Ellis', 434, trY+62, {size:13, weight:700, color:C.ink});
+  txt(ctx,'+38 FP no seu lineup', 434, trY+82, {size:10, weight:700, color:C.green});
+
+  ctx.restore();
+  return { w, h: H0, scale:s };
+}
+
+/** Desenha o print do usuário (se houver) ou o mock. Devolve a caixa real. */
+function emailPanel(ctx, x, y, w, t, maxH){
+  if (userImg){
+    // limita a altura para o card nunca vazar o quadro
+    const ratio = userImg.height / userImg.width;
+    let ww = w, hh = w * ratio;
+    if (maxH && hh > maxH){ hh = maxH; ww = hh / ratio; }
+    const xx = x + (w - ww)/2;
+    ctx.save();
+    ctx.shadowColor='rgba(0,0,0,.6)'; ctx.shadowBlur=60; ctx.shadowOffsetY=26;
+    fillCard(ctx, xx, y, ww, hh, 16, C.card, C.line);
+    ctx.shadowColor='transparent';
+    rrect(ctx, xx, y, ww, hh, 16);
+    ctx.clip();
+    ctx.drawImage(userImg, xx, y, ww, hh);
+    ctx.restore();
+    return { x: xx, y, w: ww, h: hh };
+  }
+  return Object.assign({ x, y }, emailMock(ctx, x, y, w));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cenas
+// ─────────────────────────────────────────────────────────────────────────────
+const SCENES = [];
+
+// 0–3s ─ o problema
+SCENES.push((ctx,t)=>{
+  const a = fadeIn(t, 0, .45);
+  ctx.save(); ctx.globalAlpha = a;
+
+  // relógio minimalista
+  const cx = W/2, cy = H/2 - 20, r = 132;
+  ctx.strokeStyle = C.line; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2); ctx.stroke();
+  const rot = easeInOut(p(t,.1,2.9)) * Math.PI*2*1.6;
+  ctx.strokeStyle = C.orange; ctx.lineWidth = 5; ctx.lineCap='round';
+  ctx.beginPath(); ctx.moveTo(cx,cy);
+  ctx.lineTo(cx + Math.cos(rot-Math.PI/2)*r*0.6, cy + Math.sin(rot-Math.PI/2)*r*0.6);
+  ctx.stroke();
+  ctx.fillStyle = C.orange;
+  ctx.beginPath(); ctx.arc(cx,cy,7,0,Math.PI*2); ctx.fill();
+
+  // abas abrindo em cascata
+  const n = 5;
+  for (let i=0;i<n;i++){
+    const st = .15 + i*0.13;
+    const pr = easeOut(p(t, st, st+0.55));
+    if (pr<=0) continue;
+    const w = 300, h = 46;
+    const off = (i - (n-1)/2) * 330;
+    const ang = (i - (n-1)/2) * 0.30;
+    const dist = 300 + i*26;
+    const ax = cx + off*0.55 + Math.cos(ang)*0 ;
+    const ay = cy - 250 - i*4 + pr*0;
+    ctx.save();
+    ctx.translate(cx + (i-(n-1)/2)*70, cy - 235 - i*30);
+    ctx.rotate((i-(n-1)/2)*0.05);
+    ctx.globalAlpha = a * pr * 0.9;
+    fillCard(ctx, -w/2, 0, w, h, 9, C.soft, C.line);
+    ctx.fillStyle = C.line;
+    ctx.beginPath(); ctx.arc(-w/2+22, h/2, 5, 0, Math.PI*2); ctx.fill();
+    // linha de "endereço" ilegível
+    ctx.fillStyle = '#2e3948';
+    rrect(ctx, -w/2+40, h/2-5, 120, 10, 5); ctx.fill();
+    rrect(ctx, -w/2+170, h/2-5, 60, 10, 5); ctx.fill();
+    ctx.restore();
+  }
+
+  // contador de minutos perdidos
+  const mins = Math.floor(easeOut(p(t,.3,2.6)) * 47);
+  txt(ctx, String(mins).padStart(2,'0'), W-160, 132, {size:64, weight:800, color:C.amber, align:'right'});
+  txt(ctx,'minutos', W-160, 158, {size:11, weight:700, color:C.muted, align:'right', space:2});
+  txt(ctx,'por semana', W-160, 176, {size:11, weight:600, color:C.muted, align:'right', space:1.6});
+
+  // cartela
+  const cp = easeOut(p(t,.9,1.7));
+  txt(ctx,'gerenciar fantasy dá trabalho', W/2, H-120,
+      {size:44, weight:700, color:C.ink, align:'center', alpha: cp});
+  ctx.restore();
+});
+
+// 3–6s ─ a chegada
+SCENES.push((ctx,t)=>{
+  const lt = t - 3;
+  ctx.save();
+  const fade = fadeIn(t, 3, .4);
+  ctx.globalAlpha = fade;
+
+  // ponto laranja pulsando
+  const pulse = Math.sin(lt*Math.PI*2*1.1) * .5 + .5;
+  if (lt < 1.05){
+    const pr = easeOut(p(lt,0,.9));
+    ctx.globalAlpha = fade * (1-pr*.7);
+    ctx.fillStyle = C.orange;
+    ctx.beginPath(); ctx.arc(W/2, H/2-40, 6 + pr*46, 0, Math.PI*2); ctx.fill();
+    ctx.globalAlpha = fade;
+  }
+
+  // card de notificação entrando (entra cedo: antes disso o quadro ficava quase
+  // vazio por ~0,9s, o que arrastava o ritmo da peça)
+  const inP = easeOut(p(lt,.12,.85));
+  const cy2 = lerp(-80, H/2 - 60, inP);
+  const cw = 620, ch = 128;
+  if (inP > 0){
+    ctx.save();
+    ctx.shadowColor='rgba(0,0,0,.6)'; ctx.shadowBlur=50; ctx.shadowOffsetY=18;
+    fillCard(ctx, W/2-cw/2, cy2-ch/2, cw, ch, 18, C.card, C.line);
+    ctx.restore();
+    // ícone
+    ctx.fillStyle = C.soft;
+    rrect(ctx, W/2-cw/2+22, cy2-ch/2+26, 56, 56, 13); ctx.fill();
+    ctx.strokeStyle = C.orange; ctx.lineWidth = 2.4;
+    ctx.beginPath();
+    ctx.rect(W/2-cw/2+36, cy2-ch/2+42, 28, 22);
+    ctx.moveTo(W/2-cw/2+36, cy2-ch/2+42); ctx.lineTo(W/2-cw/2+50, cy2-ch/2+56);
+    ctx.lineTo(W/2-cw/2+64, cy2-ch/2+42);
+    ctx.stroke();
+    txt(ctx,'NBA Fantasy · 10h', W/2-cw/2+96, cy2-4, {size:22, weight:700, color:C.ink});
+    txt(ctx,'Lakers Fans · 28/10', W/2-cw/2+96, cy2+24, {size:14.5, color:C.muted});
+    // marca de "novo"
+    ctx.fillStyle = C.orange;
+    ctx.beginPath(); ctx.arc(W/2+cw/2-34, cy2, 7, 0, Math.PI*2); ctx.fill();
+  }
+
+  // cartela
+  const cp = easeOut(p(lt,1.1,1.8));
+  txt(ctx,'chega sozinho. todo dia.', W/2, H/2 + 190,
+      {size:46, weight:700, color:C.ink, align:'center', alpha: cp});
+  ctx.restore();
+});
+
+// 6–12s ─ escalação
+SCENES.push((ctx,t)=>{
+  const lt = t - 6;
+  ctx.save();
+  ctx.globalAlpha = fadeIn(t,6,.4);
+
+  // zoom-out do card entrando
+  const z = lerp(0.22, 1, easeOut(p(lt,0,1.1)));
+  const pw = 780 * z;
+  const px = W/2 - pw/2;
+  const py = lerp(H/2, 96, easeOut(p(lt,0,1.1)));
+  const panel = emailPanel(ctx, px, py, pw, lt, 940);
+  const sc = panel.w / 760;                // escala do desenho do mock
+
+  // scanner percorrendo os slots
+  const sP = p(lt, 1.4, 3.4);
+  if (sP > 0 && sP < 1){
+    const idx = Math.min(LINEUP.length-1, Math.floor(sP * LINEUP.length));
+    const sy = panel.y + (258 + idx*38 - 4) * sc;
+    ctx.save();
+    ctx.fillStyle = 'rgba(249,115,22,.16)';
+    ctx.fillRect(panel.x + 30*sc, sy, panel.w - 60*sc, 34*sc);
+    ctx.fillStyle = C.orange;
+    ctx.fillRect(panel.x + 30*sc, sy, 4, 34*sc);
+    ctx.restore();
+  }
+
+  // números contando (sobre a coluna de FP)
+  const cStart = 1.5;
+  LINEUP.forEach((row,i)=>{
+    if (userImg) return;
+    const pr = easeOut(p(lt, cStart + i*0.09, cStart + i*0.09 + 0.5));
+    if (pr <= 0) return;
+    const val = (row[3] * pr).toFixed(1);
+    const ry = panel.y + (258 + i*38 + 18) * sc;
+    ctx.save();
+    ctx.fillStyle = C.card;
+    ctx.fillRect(panel.x + 655*sc, ry - 14*sc, 84*sc, 24*sc);
+    txt(ctx, val, panel.x + 726*sc, ry, {size:13*sc, weight:700, color:C.orange, align:'right'});
+    ctx.restore();
+  });
+
+  // cartela
+  const cp = easeOut(p(lt,4.0,4.8));
+  txt(ctx,'quem escalar. hoje.', W/2, H-48,
+      {size:44, weight:700, color:C.ink, align:'center', alpha: cp});
+  ctx.restore();
+});
+
+// 12–17s ─ IR + trocas
+SCENES.push((ctx,t)=>{
+  const lt = t - 12;
+  ctx.save();
+  ctx.globalAlpha = fadeIn(t,12,.4);
+
+  const slide = easeOut(p(lt,0,0.8));
+  const pw = 800;
+  const px = lerp(W, W/2 - pw/2, slide);
+  const py = 74;
+
+  const panel = emailPanel(ctx, px, py, pw, lt, 930);
+  const s = panel.w / 760;
+  const bx = panel.x + 34*s, bw = 692*s;
+
+  // cena A: foco no IR
+  const irFocus = win(lt, 1.0, 2.9, .35);
+  if (irFocus > 0){
+    const by = panel.y + (258 + 10*38 + 32)*s, bh = 56*s;
+    // escurece o que está acima e abaixo da faixa (medidas do próprio painel)
+    ctx.save();
+    ctx.globalAlpha *= irFocus * .48;
+    ctx.fillStyle = C.bg;
+    ctx.fillRect(panel.x - 12, panel.y - 12, panel.w + 24, (by - panel.y) + 12);
+    ctx.fillRect(panel.x - 12, by + bh + 8, panel.w + 24,
+                 (panel.y + panel.h) - (by + bh) + 16);
+    ctx.restore();
+
+    ctx.save();
+    ctx.globalAlpha *= irFocus;
+    ctx.strokeStyle = C.amber; ctx.lineWidth = 3;
+    rrect(ctx, bx-4, by-4, bw+8, bh+8, 10); ctx.stroke();
+    ['C. Duarte','S. Park','L. Moreau'].forEach((n,i)=>{
+      const pr = easeOut(p(lt, 1.35+i*0.16, 1.75+i*0.16));
+      if (pr<=0) return;
+      ctx.globalAlpha = irFocus * pr;
+      txt(ctx, '− '+n, bx + bw*0.30 + i*bw*0.20, by + bh*0.78,
+          {size:11*s, weight:600, color:C.red});
+    });
+    ctx.restore();
+  }
+
+  // cena B: foco na troca
+  const trFocus = win(lt, 3.0, 5.0, .3);
+  if (trFocus > 0){
+    const trY = panel.y + (258 + 10*38 + 10 + 92 + 18)*s;
+    const pbw = 306*s, pbh = 74*s;
+    const lx = panel.x + 34*s, rx = panel.x + 420*s;
+
+    ctx.save();
+    ctx.globalAlpha *= trFocus;
+
+    const p1 = easeOut(p(lt, 3.0, 3.45));
+    ctx.save(); ctx.globalAlpha *= p1;
+    ctx.fillStyle = '#2a1417'; rrect(ctx, lx, trY, pbw, pbh, 9*s); ctx.fill();
+    txt(ctx,'VOCÊ ENTREGA', lx+14*s, trY+20*s, {size:8.5*s, weight:800, color:C.red, space:1.4*s});
+    txt(ctx,'K. Ward', lx+14*s, trY+40*s, {size:12*s, weight:600, color:C.ink});
+    txt(ctx,'R. Silva', lx+14*s, trY+58*s, {size:12*s, weight:600, color:C.ink});
+    ctx.restore();
+
+    const p2 = easeOut(p(lt, 3.2, 3.65));
+    ctx.save(); ctx.globalAlpha *= p2;
+    ctx.fillStyle = '#10281c'; rrect(ctx, rx, trY, pbw, pbh, 9*s); ctx.fill();
+    txt(ctx,'VOCÊ RECEBE', rx+14*s, trY+20*s, {size:8.5*s, weight:800, color:C.green, space:1.4*s});
+    txt(ctx,'T. Ellis', rx+14*s, trY+44*s, {size:13*s, weight:700, color:C.ink});
+    ctx.restore();
+
+    const ap = easeOut(p(lt, 3.5, 3.95));
+    if (ap > 0){
+      const x0 = lx + pbw + 6*s, x1 = rx - 8*s;
+      ctx.strokeStyle = C.muted; ctx.lineWidth = 2.4*s; ctx.lineCap='round';
+      ctx.beginPath();
+      ctx.moveTo(x0, trY + pbh/2);
+      ctx.lineTo(lerp(x0, x1, ap), trY + pbh/2);
+      ctx.stroke();
+      if (ap > .9){
+        ctx.beginPath();
+        ctx.moveTo(x1-22*s, trY+pbh/2-9*s);
+        ctx.lineTo(x1, trY+pbh/2);
+        ctx.lineTo(x1-22*s, trY+pbh/2+9*s);
+        ctx.stroke();
+      }
+    }
+
+    const gp = easeOut(p(lt, 3.8, 4.5));
+    if (gp > 0){
+      ctx.save(); ctx.globalAlpha *= gp;
+      txt(ctx, '+'+Math.round(38*gp)+' FP no lineup', rx + pbw*0.5, trY + pbh*0.92,
+          {size:15*s, weight:700, color:C.green, align:'center'});
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  // cartela
+  const cp = easeOut(p(lt, 4.3, 5.0));
+  txt(ctx,'e o que negociar.', W/2, H-44,
+      {size:42, weight:700, color:C.ink, align:'center', alpha: cp});
+  ctx.restore();
+});
+
+// 17–23s ─ relatório pré-jogo
+SCENES.push((ctx,t)=>{
+  const lt = t - 17;
+  ctx.save();
+  const a = fadeIn(t, 17, .4);
+  ctx.globalAlpha = a;
+
+  // ── título da cena
+  const hp = easeOut(p(lt, .05, .55));
+  txt(ctx,'RELATÓRIO PRÉ-JOGO', W/2, 96,
+      {size:13, weight:800, color:C.orange, align:'center', space:4, alpha:hp});
+  txt(ctx,'antes de cada jogo', W/2, 130,
+      {size:26, weight:600, color:C.ink, align:'center', alpha:hp});
+
+  // ── esquerda: o email enxuto (só escalação + IR)
+  const ep = easeOut(p(lt, .2, 1.0));
+  if (ep > 0){
+    const cw = 600, cx = 150 + (1-ep)*-60;
+    const cy = 250, chH = 430;
+    ctx.save();
+    ctx.globalAlpha *= ep;
+    ctx.shadowColor='rgba(0,0,0,.6)'; ctx.shadowBlur=44; ctx.shadowOffsetY=18;
+    fillCard(ctx, cx, cy, cw, chH, 14, C.card, C.line);
+    ctx.restore();
+
+    // header
+    ctx.save();
+    ctx.globalAlpha *= ep;
+    ctx.fillStyle = C.soft;
+    rrect(ctx, cx, cy, cw, 78, 14); ctx.fill();
+    ctx.fillStyle = C.line; ctx.fillRect(cx, cy+77, cw, 1);
+    ctx.fillStyle = C.orange;
+    rrect(ctx, cx+20, cy+20, 34, 34, 9); ctx.fill();
+    txt(ctx,'PRÉ-JOGO', cx+66, cy+34, {size:10, weight:800, color:C.orange, space:2});
+    txt(ctx,'Lakers Fans', cx+66, cy+58, {size:16, weight:700, color:'#fff'});
+
+    // 4 linhas de escalação
+    const rows = [['PG','J. Carter','38.4'],['SG','A. Brooks','33.1'],
+                  ['SF','D. Reyes','30.7'],['C','T. Ellis','27.8']];
+    rows.forEach((r,i)=>{
+      const rp = easeOut(p(lt, .55 + i*.09, .55 + i*.09 + .35));
+      if (rp<=0) return;
+      ctx.globalAlpha = ep * rp;
+      const ry = cy + 100 + i*44;
+      ctx.fillStyle = C.bg; rrect(ctx, cx+20, ry, 48, 24, 6); ctx.fill();
+      txt(ctx, r[0], cx+44, ry+17, {size:9, weight:800, color:C.orange, align:'center'});
+      txt(ctx, r[1], cx+82, ry+17, {size:13, weight:600, color:C.ink});
+      txt(ctx, r[2], cx+cw-20, ry+17, {size:13, weight:700, color:C.orange, align:'right'});
+    });
+
+    // chip do IR
+    const irp = easeOut(p(lt, 1.05, 1.45));
+    if (irp > 0){
+      ctx.globalAlpha = ep * irp;
+      ctx.fillStyle = '#2a1417';
+      rrect(ctx, cx+20, cy+288, cw-40, 44, 8); ctx.fill();
+      ctx.fillStyle = C.red;
+      rrect(ctx, cx+20, cy+288, 4, 44, 2); ctx.fill();
+      txt(ctx,'1 vaga de IR em uso', cx+38, cy+316, {size:12, weight:700, color:C.ink});
+    }
+
+    // rodapé: o que NÃO tem neste relatório
+    const fp = easeOut(p(lt, 1.5, 1.9));
+    if (fp > 0){
+      ctx.globalAlpha = ep * fp;
+      txt(ctx,'só escalação e IR — sem add/drop nem trocas', cx+cw/2, cy+376,
+          {size:12, weight:600, color:C.muted, align:'center'});
+    }
+    ctx.restore();
+  }
+
+  // ── direita: contagem + o aviso
+  const rx = 1330;
+
+  const cp2 = easeOut(p(lt, .7, 1.2));
+  if (cp2 > 0){
+    ctx.save();
+    ctx.globalAlpha *= cp2;
+    txt(ctx,'BOS × MIA', rx, 268, {size:13, weight:700, color:C.muted, align:'center', space:3});
+
+    const secs = Math.max(0, 30 - Math.floor(p(lt, .9, 3.4)*30));
+    const blink = lt > 3.0 ? (Math.sin(lt*9)>0 ? 1 : .5) : 1;
+    ctx.globalAlpha *= blink;
+    txt(ctx, '00:'+String(secs).padStart(2,'0'), rx, 352,
+        {size:76, weight:800, color:C.red, align:'center'});
+    ctx.restore();
+    txt(ctx,'para o tip-off', rx, 380,
+        {size:10.5, weight:700, color:C.muted, align:'center', space:2.4, alpha:cp2});
+  }
+
+  const inP = easeOut(p(lt, 1.5, 2.1));
+  if (inP > 0){
+    const cw = 780, ch = 186;
+    const shake = lt>2.1 && lt<2.34 ? Math.sin(lt*90)*4 : 0;
+    const bx = rx - cw/2 + shake;
+    const by = lerp(440, 418, inP);
+    ctx.save();
+    ctx.shadowColor='rgba(0,0,0,.6)'; ctx.shadowBlur=48; ctx.shadowOffsetY=18;
+    fillCard(ctx, bx, by, cw, ch, 15, C.card, C.line);
+    ctx.restore();
+    ctx.fillStyle = C.amber;
+    rrect(ctx, bx, by, 5, ch, 3); ctx.fill();
+
+    txt(ctx,'1 troca necessária', bx+30, by+52, {size:29, weight:800, color:C.ink});
+
+    const sp = easeOut(p(lt, 2.3, 2.75));
+    txt(ctx,'K. Ward', bx+30, by+96, {size:17, weight:600, color:C.muted});
+    if (sp>0){
+      ctx.strokeStyle = C.red; ctx.lineWidth = 2.4; ctx.lineCap='round';
+      ctx.beginPath();
+      ctx.moveTo(bx+30, by+90); ctx.lineTo(bx+30 + 88*sp, by+90); ctx.stroke();
+    }
+    const ip = easeOut(p(lt, 2.55, 3.0));
+    if (ip>0){
+      ctx.save(); ctx.globalAlpha *= ip;
+      txt(ctx,'→ T. Ellis', bx+156, by+96, {size:17, weight:700, color:C.green});
+      ctx.restore();
+    }
+    txt(ctx,'Ward está no banco e o BOS joga hoje', bx+30, by+130, {size:11.5, color:C.muted});
+    txt(ctx,'+27 FP', bx+cw-30, by+96, {size:15, weight:800, color:C.green, align:'right'});
+
+    ctx.fillStyle = C.soft;
+    rrect(ctx, bx+cw-142, by+22, 112, 30, 7); ctx.fill();
+    txt(ctx,'30 min antes', bx+cw-86, by+42,
+        {size:10.5, weight:700, color:C.amber, align:'center'});
+  }
+
+  // ── o silêncio: quando não há nada a fazer
+  const np = easeOut(p(lt, 3.5, 4.05));
+  if (np > 0){
+    ctx.save();
+    ctx.globalAlpha *= np;
+    const cw = 600, bx = rx - cw/2;
+    fillCard(ctx, bx, 640, cw, 76, 13, C.card, C.line);
+    ctx.fillStyle = C.line;
+    rrect(ctx, bx, 640, 5, 76, 3); ctx.fill();
+    txt(ctx,'nada a fazer', bx+30, 676, {size:20, weight:700, color:C.muted});
+    txt(ctx,'escalação já correta — nenhum aviso', bx+30, 700,
+        {size:11, color:C.muted});
+    ctx.restore();
+  }
+
+  // cartela
+  const kp = easeOut(p(lt, 4.3, 4.9));
+  txt(ctx,'só quando precisa mudar.', W/2, H-64,
+      {size:42, weight:700, color:C.ink, align:'center', alpha: kp});
+  ctx.restore();
+});
+
+// 23–28s ─ a escala
+SCENES.push((ctx,t)=>{
+  const lt = t - 23;
+  ctx.save();
+  ctx.globalAlpha = fadeIn(t,23,.4);
+
+  const names = ['Marcos','Ana','João','Bia','Rafa','Léo'];
+  const cols = 3, rows = 2;
+  const cw = 300, ch = 176, gx = 34, gy = 30;
+  const totalW = cols*cw + (cols-1)*gx;
+  const ox = W/2 - totalW/2;
+  const oy = H/2 - (rows*ch + (rows-1)*gy)/2 + 10;
+
+  names.forEach((n,i)=>{
+    const pr = easeOut(p(lt, 0.1 + i*0.08, 0.1 + i*0.08 + 0.5));
+    if (pr<=0) return;
+    const r = Math.floor(i/cols), c = i%cols;
+    const x = ox + c*(cw+gx);
+    const y = oy + r*(ch+gy) + (1-pr)*22;
+    ctx.save();
+    ctx.globalAlpha *= pr;
+    fillCard(ctx, x, y, cw, ch, 12, C.card, C.line);
+    // mini header
+    ctx.fillStyle = C.soft;
+    rrect(ctx, x, y, cw, 44, 12); ctx.fill();
+    ctx.fillStyle = C.orange;
+    rrect(ctx, x+14, y+12, 20, 20, 6); ctx.fill();
+    txt(ctx,'Oi, '+n, x+46, y+29, {size:15, weight:700, color:C.ink});
+    // linhas
+    for (let l=0;l<4;l++){
+      ctx.fillStyle = l===0 ? C.orange : '#2e3948';
+      rrect(ctx, x+14, y+60+l*26, l===0? 120 : 90+l*26, 8, 4); ctx.fill();
+    }
+    ctx.restore();
+  });
+
+  // fio condutor para o nó central
+  const lp = easeOut(p(lt, 2.0, 3.1));
+  if (lp > 0){
+    ctx.save();
+    ctx.strokeStyle = C.orange; ctx.lineWidth = 2; ctx.globalAlpha *= .55*lp;
+    names.forEach((_,i)=>{
+      const r = Math.floor(i/cols), c = i%cols;
+      const x = ox + c*cw + c*gx + cw/2;
+      const y = oy + r*ch + r*gy + ch;
+      const tx = W/2, ty = oy + rows*ch + gy + 46;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(lerp(x, tx, lp), lerp(y, ty, lp));
+      ctx.stroke();
+    });
+    ctx.restore();
+  }
+  const np = easeOut(p(lt, 3.0, 3.6));
+  if (np>0){
+    ctx.save(); ctx.globalAlpha *= np;
+    fillCard(ctx, W/2-120, oy + rows*ch + gy + 20, 240, 52, 12, C.soft, C.line);
+    txt(ctx,'1 liga', W/2, oy + rows*ch + gy + 54,
+        {size:17, weight:700, color:C.orange, align:'center'});
+    ctx.restore();
+  }
+
+  // cartela
+  const cp = easeOut(p(lt, 3.4, 4.2));
+  txt(ctx,'um relatório por dono. automático.', W/2, H-88,
+      {size:40, weight:700, color:C.ink, align:'center', alpha: cp});
+  ctx.restore();
+});
+
+// 28–32s ─ roda na nuvem
+SCENES.push((ctx,t)=>{
+  const lt = t - 28;
+  ctx.save();
+  ctx.globalAlpha = fadeIn(t,28,.4);
+
+  const ly = H/2 - 30;
+  const x0 = W/2 - 520, x1 = W/2 + 520;
+
+  // kicker imediato: sem isso os primeiros 0,3s desta cena ficavam vazios
+  txt(ctx,'FACILIDADE PARA USAR', W/2, ly - 150,
+      {size:12, weight:800, color:C.orange, align:'center', space:4,
+       alpha: easeOut(p(lt, .02, .3))});
+  txt(ctx,'sem depender do seu computador', W/2, ly - 116,
+      {size:24, weight:600, color:C.ink, align:'center',
+       alpha: easeOut(p(lt, .08, .42))});
+
+  // trilha se desenhando
+  const tp = easeOut(p(lt, 0.05, 1.1));
+  ctx.strokeStyle = C.line; ctx.lineWidth = 2; ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(x0, ly);
+  ctx.lineTo(lerp(x0, x1, tp), ly);
+  ctx.stroke();
+
+  const nodes = [
+    ['Nosso sistema','execução'],
+    ['Chega no seu email','avaliação'],
+    ['Momento chave','decisão'],
+  ];
+  nodes.forEach(([name,sub],i)=>{
+    const pr = easeOut(p(lt, 0.4 + i*0.35, 0.4 + i*0.35 + 0.5));
+    if (pr<=0) return;
+    const nx = W/2 + (i-1)*520;
+    ctx.save();
+    ctx.globalAlpha *= pr;
+    // nó
+    ctx.fillStyle = C.card;
+    ctx.strokeStyle = C.orange; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(nx, ly, lerp(0, 13, pr), 0, Math.PI*2);
+    ctx.fill(); ctx.stroke();
+    txt(ctx, name, nx, ly + 56, {size:22, weight:700, color:C.ink, align:'center'});
+    txt(ctx, sub, nx, ly + 82, {size:12.5, weight:600, color:C.muted, align:'center', space:1.6});
+    ctx.restore();
+  });
+
+  // fecho da cena: nada para instalar
+  const cp = easeOut(p(lt, 2.1, 2.9));
+  if (cp>0){
+    ctx.save();
+    ctx.globalAlpha *= cp;
+    txt(ctx,'nada para instalar', W/2, ly + 196,
+        {size:56, weight:800, color:C.orange, align:'center'});
+    ctx.restore();
+  }
+
+  // cartela
+  const kp = easeOut(p(lt, 2.8, 3.5));
+  txt(ctx,'Chega direto no seu email.', W/2, ly + 262,
+      {size:32, weight:700, color:C.ink, align:'center', alpha: kp});
+  ctx.restore();
+});
+
+// 32–36s ─ fechamento
+SCENES.push((ctx,t)=>{
+  const lt = t - 32;
+  ctx.save();
+  ctx.globalAlpha = fadeIn(t,32,.4);
+
+  // marca
+  const gp = easeOut(p(lt, 0.15, 0.9));
+  ctx.save();
+  ctx.globalAlpha *= gp;
+  ctx.fillStyle = C.orange;
+  rrect(ctx, W/2-30, H/2-218 + (1-gp)*16, 60, 60, 16); ctx.fill();
+  txt(ctx,'N', W/2, H/2-176 + (1-gp)*16, {size:30, weight:800, color:'#1a0d02', align:'center'});
+  ctx.restore();
+
+  const t1 = easeOut(p(lt, 0.4, 1.2));
+  txt(ctx,'NBA Fantasy', W/2, H/2-72, {size:76, weight:800, color:'#fff', align:'center', alpha: t1});
+
+  const t2 = easeOut(p(lt, 0.9, 1.7));
+  txt(ctx,'Escalação, IR, trocas e free agents.', W/2, H/2+2,
+      {size:26, weight:500, color:C.muted, align:'center', alpha: t2});
+  const t3 = easeOut(p(lt, 1.2, 2.0));
+  txt(ctx,'Resolvido antes do primeiro jogo.', W/2, H/2+38,
+      {size:26, weight:500, color:C.muted, align:'center', alpha: t3});
+
+  // ── assinatura da agência
+  const sp = easeOut(p(lt, 2.0, 2.6));
+  if (sp > 0){
+    const ay = H/2 + 152;
+    ctx.save();
+    ctx.globalAlpha *= sp;
+    // fio separador
+    ctx.fillStyle = C.line;
+    ctx.fillRect(W/2 - 40, ay - 44, 80, 2);
+
+    // "67" em destaque + "agence" no peso normal, centralizados como bloco
+    const numSize = 30, wordSize = 30;
+    ctx.font = `800 ${numSize}px Inter,system-ui,sans-serif`;
+    const wNum = ctx.measureText('67').width;
+    ctx.font = `600 ${wordSize}px Inter,system-ui,sans-serif`;
+    const wWord = ctx.measureText(' agence').width;
+    const x0 = W/2 - (wNum + wWord)/2;
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = C.orange;
+    ctx.font = `800 ${numSize}px Inter,system-ui,sans-serif`;
+    ctx.fillText('67', x0, ay);
+    ctx.fillStyle = C.ink;
+    ctx.font = `600 ${wordSize}px Inter,system-ui,sans-serif`;
+    ctx.fillText(' agence', x0 + wNum, ay);
+    ctx.restore();
+
+    // tagline
+    const lp = easeOut(p(lt, 2.35, 2.95));
+    if (lp > 0){
+      txt(ctx,'saving your time', W/2, ay + 32,
+          {size:15, weight:600, color:C.muted, align:'center', space:2.4, alpha: lp});
+    }
+  }
+
+  // ponto pulsando no fim
+  const dp = p(lt, 2.6, 3.2);
+  if (dp > 0){
+    const r = 5 + easeOut(dp)*38;
+    ctx.globalAlpha = fadeIn(t,32,.4) * (1-dp) * .55;
+    ctx.strokeStyle = C.orange; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(W/2, H/2+238, r, 0, Math.PI*2); ctx.stroke();
+  }
+  ctx.restore();
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Render
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * Layout do quadro: o desenho é sempre feito em 1920×1080.
+ * - 16:9  → escala exata.
+ * - 1:1   → ajusta pela largura e centraliza; sobra banda em cima/baixo.
+ * - 9:16  → idem, banda maior.
+ *
+ * Deliberadamente NÃO usamos "cover" (preencher cortando): com cover o card do
+ * email seria cortado nas laterais, e o texto das cenas vive no centro-largura
+ * do desenho. Letterbox com moldura de marca preserva tudo.
+ */
+function layout(w, h){
+  const s = Math.min(w / W, h / H);
+  const ox = (w - W * s) / 2;
+  const oy = (h - H * s) / 2;
+  return { s, ox, oy, bandTop: oy, bandBottom: h - (oy + H * s), bandSide: ox };
+}
+
+function drawBands(ctx, w, h, L){
+  // fundo contínuo (evita emenda visível entre moldura e conteúdo)
+  const g = ctx.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0, '#0d1219');
+  g.addColorStop(0.5, C.bg);
+  g.addColorStop(1, '#0d1219');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, h);
+
+  const big = L.bandTop > 200;              // 9:16 / 1:1 têm banda para compor
+  if (!big){
+    if (L.bandTop > 60){
+      // moldura discreta para bandas pequenas
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.fillStyle = C.orange;
+      ctx.font = `800 13px Inter,system-ui,sans-serif`;
+      if ('letterSpacing' in ctx) ctx.letterSpacing = '3px';
+      ctx.fillText('NBA FANTASY', w/2, L.bandTop * 0.55);
+      ctx.restore();
+    }
+    return;
+  }
+
+  const u = Math.min(w, h) / 1080;
+  ctx.save();
+  ctx.textAlign = 'center';
+
+  const wrap = (text, maxW, font) => {
+    ctx.font = font;
+    const words = text.split(' ');
+    const lines = [];
+    let cur = '';
+    for (const word of words){
+      const t = cur ? cur + ' ' + word : word;
+      if (ctx.measureText(t).width > maxW && cur){ lines.push(cur); cur = word; }
+      else cur = t;
+    }
+    if (cur) lines.push(cur);
+    return lines;
+  };
+
+  // ── topo: marca + headline
+  const topCy = L.bandTop * 0.5;
+  const kickerSize = 15 * u, headSize = 52 * u, lineH = 62 * u;
+  ctx.fillStyle = C.orange;
+  ctx.font = `800 ${kickerSize}px Inter,system-ui,sans-serif`;
+  if ('letterSpacing' in ctx) ctx.letterSpacing = `${4*u}px`;
+  ctx.fillText('NBA FANTASY', w/2, topCy - lineH * 1.05);
+  if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
+
+  const head = wrap('Seu time resolvido antes do primeiro jogo', w * 0.82,
+                    `800 ${headSize}px Inter,system-ui,sans-serif`);
+  ctx.fillStyle = C.ink;
+  head.forEach((ln, i) => {
+    ctx.fillText(ln, w/2, topCy + (i - (head.length-1)/2) * lineH + lineH*0.55);
+  });
+
+  // ── base: subtítulo + CTA
+  const botCy = h - L.bandBottom * 0.5;
+  ctx.fillStyle = C.muted;
+  ctx.font = `500 ${20*u}px Inter,system-ui,sans-serif`;
+  ctx.fillText('escalação · IR · trocas · free agents', w/2, botCy - 34*u);
+
+  const cta = 'automático · roda na nuvem · sem instalar';
+  ctx.font = `700 ${19*u}px Inter,system-ui,sans-serif`;
+  const cw = ctx.measureText(cta).width + 44*u;
+  const ch = 52*u, cyy = botCy + 14*u;
+  ctx.fillStyle = C.soft;
+  rrect(ctx, w/2 - cw/2, cyy - ch/2, cw, ch, 999);
+  ctx.fill();
+  ctx.strokeStyle = C.orange; ctx.lineWidth = 1.6*u;
+  rrect(ctx, w/2 - cw/2, cyy - ch/2, cw, ch, 999);
+  ctx.stroke();
+  ctx.fillStyle = C.orange;
+  ctx.fillText(cta, w/2, cyy + 6.5*u);
+
+  ctx.restore();
+}
+
+/** Desenha o quadro inteiro em ctx, no tempo t, num canvas de w×h. */
+function drawFrame(ctx, t, w, h){
+  ctx.save();
+  ctx.setTransform(1,0,0,1,0,0);
+
+  const L = layout(w, h);
+  drawBands(ctx, w, h, L);
+
+  ctx.setTransform(L.s, 0, 0, L.s, L.ox, L.oy);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, W, H);
+  ctx.clip();                        // nada escapa da área do desenho
+
+  bgBase(ctx);
+  const tt = Math.min(t, DUR - 0.001);
+  const i = sceneIndex(t);
+
+  // Crossfade: durante a entrada da cena atual, a anterior é desenhada opaca
+  // por baixo. Sem isso a tela voltaria ao fundo liso entre as cenas (o
+  // `globalAlpha` da nova começaria em 0 e a antiga não estaria mais no quadro).
+  const cur = fadeIn(t, BOUNDS[i], .4);
+  if (i > 0 && cur < 1) SCENES[i-1](ctx, tt);
+
+  SCENES[i](ctx, tt);
+
+  ctx.restore();
+  ctx.restore();
+}
+
+const BOUNDS = [0,3,6,12,17,23,28,32,36];
+function sceneIndex(t){
+  for (let i=BOUNDS.length-2; i>=0; i--) if (t >= BOUNDS[i]) return i;
+  return 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UI / player
+// ─────────────────────────────────────────────────────────────────────────────
+const cv = document.getElementById('cv');
+const ctx2d = cv.getContext('2d');
+const btnPlay = document.getElementById('play');
+const scrub = document.getElementById('scrub');
+const timeEl = document.getElementById('time');
+const loopEl = document.getElementById('loop');
+const fmtEl = document.getElementById('fmt');
+const recBtn = document.getElementById('rec');
+const pngBtn = document.getElementById('png');
+const progEl = document.getElementById('prog');
+const progBar = progEl.querySelector('i');
+const hintEl = document.getElementById('hint');
+
+let playing = false;
+let tNow = 0;
+let rafId = null;
+let userImg = null;
+
+const params = new URLSearchParams(location.search);
+if (params.has('t')){
+  const t0 = parseFloat(params.get('t'));
+  if (!isNaN(t0)) tNow = Math.max(0, Math.min(DUR, t0));
+  scrub.value = tNow;
+}
+
+function fitPreview(){
+  const out = FMT[fmtEl.value];
+  cv.width = out[0];
+  cv.height = out[1];
+  cv.style.aspectRatio = `${out[0]} / ${out[1]}`;
+  cv.style.maxHeight = '64vh';
+}
+
+function render(){
+  drawFrame(ctx2d, tNow, cv.width, cv.height);
+  timeEl.textContent = `${tNow.toFixed(2)} / ${DUR.toFixed(2)}s`;
+  scrub.value = tNow;
+}
+
+function tick(ts){
+  if (!playing) return;
+  const dt = (ts - last)/1000;
+  last = ts;
+  tNow += dt;
+  if (tNow >= DUR){
+    if (loopEl.checked){ tNow = 0; }
+    else { tNow = DUR; playing = false; btnPlay.textContent = '▶ Tocar'; render(); return; }
+  }
+  render();
+  rafId = requestAnimationFrame(tick);
+}
+let last = 0;
+
+function play(){
+  if (tNow >= DUR) tNow = 0;
+  playing = true;
+  btnPlay.textContent = '❚❚ Pausar';
+  last = performance.now();
+  rafId = requestAnimationFrame(tick);
+}
+function pause(){
+  playing = false;
+  btnPlay.textContent = '▶ Tocar';
+  if (rafId) cancelAnimationFrame(rafId);
+}
+
+btnPlay.onclick = () => playing ? pause() : play();
+scrub.oninput = () => { pause(); tNow = parseFloat(scrub.value); render(); };
+fmtEl.onchange = () => { fitPreview(); render(); };
+
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space'){ e.preventDefault(); playing ? pause() : play(); }
+  if (e.code === 'ArrowRight'){ pause(); tNow = Math.min(DUR, tNow+1); render(); }
+  if (e.code === 'ArrowLeft'){ pause(); tNow = Math.max(0, tNow-1); render(); }
+});
+
+// ── upload do print
+const drop = document.getElementById('drop');
+function loadImage(file){
+  const url = URL.createObjectURL(file);
+  const im = new Image();
+  im.onload = () => { userImg = im; render(); showImg(); };
+  im.src = url;
+}
+function showImg(){
+  drop.innerHTML = 'Print carregado — as cenas 3 e 4 usam ele.';
+  const pv = document.createElement('img');
+  pv.src = userImg.src;
+  drop.appendChild(pv);
+}
+drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', e => {
+  e.preventDefault(); drop.classList.remove('over');
+  const f = e.dataTransfer.files[0];
+  if (f && f.type.startsWith('image/')) loadImage(f);
+});
+document.getElementById('clearImg').onclick = () => {
+  userImg = null;
+  drop.innerHTML = 'Arraste um PNG/JPG do email real aqui para substituir o mock nas cenas 3 e 4.'
+    + '<div class="note">Sem print, a animação usa uma réplica vetorial do email '
+    + '(mesmas cores e layout do produto).</div>';
+  render();
+};
+
+// ── export PNG
+pngBtn.onclick = () => {
+  cv.toBlob(b => download(b, `nba-fantasy-frame-${tNow.toFixed(1)}s.png`), 'image/png');
+};
+
+function download(blob, name){
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
+function pickMime(){
+  // MP4 primeiro: abre em WhatsApp, Instagram e QuickTime sem conversão.
+  // VP9 é o fallback de melhor qualidade no Chrome/Firefox.
+  const cands = [
+    'video/mp4;codecs=avc1.4d002a',
+    'video/mp4',
+    'video/webm;codecs=vp9',
+    'video/webm;codecs=vp8',
+    'video/webm',
+  ];
+  for (const m of cands) if (MediaRecorder.isTypeSupported(m)) return m;
+  return '';
+}
+
+// ── export vídeo (tempo real via MediaRecorder)
+recBtn.onclick = async () => {
+  if (!('MediaRecorder' in window)){
+    alert('Este navegador não suporta MediaRecorder. Use Chrome ou Edge.');
+    return;
+  }
+  pause();
+  recBtn.disabled = true; pngBtn.disabled = true; fmtEl.disabled = true;
+  progEl.classList.add('on');
+  hintEl.style.color = '';                 // limpa aviso de gravação anterior
+  hintEl.textContent = 'gravando… mantenha esta aba em primeiro plano';
+
+  const fmt = fmtEl.value;
+  const [w,h] = FMT[fmt];
+  const off = document.createElement('canvas');
+  off.width = w; off.height = h;
+  const octx = off.getContext('2d');
+
+  const stream = off.captureStream(60);
+  const mime = pickMime();
+  const rec = new MediaRecorder(stream, mime
+    ? { mimeType: mime, videoBitsPerSecond: 14_000_000 }
+    : { videoBitsPerSecond: 14_000_000 });
+  const chunks = [];
+  rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+  const stopped = new Promise(res => rec.onstop = res);
+  rec.start();
+
+  // Driver por timer, com dois cuidados:
+  //
+  // 1. `requestAnimationFrame` é CONGELADO quando a aba perde o foco, e a
+  //    gravação travaria em "gravando…" para sempre. O timer sempre avança.
+  // 2. Mas em segundo plano o navegador LIMITA o timer a ~1 chamada/segundo,
+  //    então o vídeo sai com pouquíssimos quadros (ficava com 1/8 do tamanho).
+  //    Por isso contamos os quadros desenhados: se o total ficar muito abaixo
+  //    do esperado, o usuário é avisado a regravar com a aba em foco.
+  const t0 = performance.now();
+  let frames = 0;
+  await new Promise(resolve => {
+    function step(){
+      const el = (performance.now() - t0) / 1000;
+      const tt = Math.min(el, DUR);
+      drawFrame(octx, tt, w, h);
+      frames++;
+      progBar.style.width = (tt/DUR*100).toFixed(1)+'%';
+      if (el >= DUR){ resolve(); return; }
+      setTimeout(step, 16);
+    }
+    step();
+  });
+
+  rec.stop();
+  await stopped;
+  const isMp4 = mime.includes('mp4');
+  const ext = isMp4 ? 'mp4' : 'webm';
+  const name = `nba-fantasy-motion-${fmt.replace(':','x')}.${ext}`;
+  download(new Blob(chunks, { type: mime || 'video/webm' }), name);
+
+  // ~55 fps é o esperado com a aba visível. Abaixo de 40% disso, o navegador
+  // estrangulou o timer (aba em segundo plano) e o vídeo fica tremido.
+  const esperado = DUR * 55;
+  const completo = frames >= esperado * 0.4;
+  progBar.style.width = '100%';
+  hintEl.textContent = completo
+    ? `pronto: ${name} (${frames} quadros)`
+    : `salvo, mas com só ${frames} quadros — a aba ficou em segundo plano. ` +
+      `Regrave mantendo esta aba à frente.`;
+  hintEl.style.color = completo ? '' : '#fbbf24';
+  recBtn.disabled = false; pngBtn.disabled = false; fmtEl.disabled = false;
+  setTimeout(()=>{ progEl.classList.remove('on'); progBar.style.width='0'; }, 1600);
+};
+
+// init
+fitPreview();
+render();
+if (!params.has('t')) setTimeout(play, 250);
+</script>
+</body>
+</html>
