@@ -127,6 +127,7 @@ Funções principais:
 | `gate.py` | Portão do GitHub Actions: libera a execução só na janela de 30 min antes do 1º jogo. |
 | `.github/workflows/nba-fantasy.yml` | Agendamento na nuvem (cron da manhã + a cada 30 min, 1 job por time). |
 | `teams.py` | Normaliza as listas posicionais de times dos secrets (usado pelos jobs `times` e `agente`). |
+| `.github/dependabot.yml` | Atualiza actions e dependências Python mensalmente, para não voltar a acumular runtime depreciado. |
 | `scheduler.py` | Agendador alternativo para rodar localmente (loop contínuo). |
 | `systemd/nba-fantasy.service` | Unit do systemd para o agendador local. |
 | `roster.csv` | Removido: o elenco vem da API do ESPN. |

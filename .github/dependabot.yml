@@ -1,0 +1,33 @@
+# Mantem as actions e as dependencias Python atualizadas.
+#
+# Sem isso o projeto volta a acumular runtime depreciado: em outubro de 2026 as
+# actions ainda estavam em Node 20, que o GitHub ja forcava a rodar em Node 24.
+# O Dependabot abre PR automatico quando sai uma major nova, entao a atualizacao
+# vira uma revisao de rotina em vez de um susto no meio do campeonato.
+version: 2
+
+updates:
+  # Actions do workflow (.github/workflows/*.yml).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      # Uma PR por rodada em vez de uma por action: sao poucas e mudam juntas.
+      actions:
+        patterns: ["*"]
+
+  # requirements.txt (nba_api, espn_api, pandas, numpy, scipy, requests...).
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      python:
+        patterns: ["*"]

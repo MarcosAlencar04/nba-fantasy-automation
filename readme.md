@@ -159,6 +159,11 @@ diferentes, voce recebe tres emails — um por jogo, no momento de cada um.
    Nao precisa de `ROSTER_CSV`: o elenco vem do ESPN pelo `ESPN_TEAM_ID`.
 3. **Actions > NBA Fantasy > Run workflow** com `mode = morning` para testar.
 
+**Versoes fixadas.** O workflow usa `ubuntu-24.04` (nao `ubuntu-latest`, que esta
+migrando de versao) e actions em `v7`, todas rodando em Node 24. O
+`.github/dependabot.yml` abre uma PR mensal quando sai major nova, para o projeto
+nao voltar a acumular runtime depreciado.
+
 ### Varios times, um relatorio por dono
 
 Os times vem de **listas posicionais** nos secrets. A ordem e o pareamento: a

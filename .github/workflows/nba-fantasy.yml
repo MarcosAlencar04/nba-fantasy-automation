@@ -23,7 +23,9 @@ jobs:
   # times, entao nao faz sentido pagar um spin-up por time para descobrir que
   # nao ha jogo agora.
   gate:
-    runs-on: ubuntu-latest
+    # Runner fixado de proposito: `ubuntu-latest` esta migrando para o Ubuntu 26
+    # e o apelido muda de significado sem aviso no meio do campeonato.
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       run: ${{ steps.gate.outputs.run }}
@@ -33,7 +35,11 @@ jobs:
       # cai em exatamente uma execucao -> um aviso por jogo, sem repeticao.
       PREGAME_LEAD_MIN: "30"
     steps:
-      - uses: actions/checkout@v4
+      # persist-credentials=false: o job so le o repositorio, entao o
+      # GITHUB_TOKEN nao precisa ficar guardado no .git/config do runner.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       # O gate so usa a stdlib, entao as execucoes "vazias" (a maioria) nao
       # gastam setup de Python nem pip.
@@ -58,7 +64,7 @@ jobs:
     needs: gate
     # Sem isso este job subiria nas 48 execucoes do dia so para montar o matrix.
     if: needs.gate.outputs.run == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       matrix: ${{ steps.load.outputs.matrix }}
@@ -67,7 +73,9 @@ jobs:
       EMAIL_TO: ${{ secrets.EMAIL_TO }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Contar times
         id: load
@@ -81,7 +89,7 @@ jobs:
   agente:
     needs: [gate, times]
     if: needs.gate.outputs.run == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     # Cada time roda no proprio runner, entao .cache e reports/ nao colidem. O
     # grupo por indice evita que duas execucoes do mesmo time se sobreponham.
@@ -112,7 +120,9 @@ jobs:
       EMAIL_FROM_NAME: ${{ vars.EMAIL_FROM_NAME || 'NBA Fantasy Daily Report' }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       # Recorta a posicao INDEX das tres listas, com a mesma normalizacao que o
       # job `times` usou para montar o matrix. Uma entrada vazia (ou um
@@ -123,7 +133,7 @@ jobs:
           set -eu
           python3 teams.py resolve "$INDEX" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -144,7 +154,7 @@ jobs:
 
       - name: Guardar o relatorio
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: relatorio-time-${{ matrix.index }}-${{ github.run_id }}
           path: reports/time-${{ matrix.index }}/
