@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% set active_nav = "users" %}
+{% block title %}Usuarios · NBA Fantasy{% endblock %}
+
+{% block content %}
+<h1>Usuarios</h1>
+<div class="sub">
+  {{ rows|length }} registro(s) nesta visao · cada usuario e o dono de um time
+  da mesma liga
+</div>
+
+<div class="bar filters">
+  {% for key, val in filters.items() %}
+    <a href="/users?status={{ key }}{% if league_id %}&league={{ league_id }}{% endif %}"
+       class="{{ 'on' if status == key else '' }}">{{ val[1] }}</a>
+  {% endfor %}
+  <span style="flex:1"></span>
+  <a class="btn primary" href="/users/new">+ Novo usuario</a>
+</div>
+
+{% if leagues %}
+<div class="bar">
+  <span class="muted">Liga:</span>
+  <a href="/users?status={{ status }}" class="{{ 'on' if not league_id else '' }}">todas</a>
+  {% for l in leagues %}
+    <a href="/users?status={{ status }}&league={{ l.id }}"
+       class="{{ 'on' if league_id == l.id else '' }}">{{ l.name }}</a>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if not rows %}
+  <div class="card"><div style="padding:22px" class="muted">
+    Nenhum usuario nesta visao.
+    {% if status == "active" %}Tente <a href="/users?status=inactive">Inativos</a>
+    ou <a href="/users?status=all">Todos os vivos</a>.{% endif %}
+  </div></div>
+{% else %}
+<div class="card">
+<table>
+  <thead>
+    <tr>
+      <th>#</th><th>Nome</th><th>Liga</th><th>team_id</th>
+      <th>E-mail</th><th>Telegram</th><th>Status</th><th>Criado</th><th></th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for r in rows %}
+    <tr class="{{ 'dead' if r.deleted_at else '' }}">
+      <td class="muted">{{ r.id }}</td>
+      <td><strong>{{ r.name }}</strong>
+        {% if r.notes %}<div class="hint">{{ r.notes }}</div>{% endif %}
+      </td>
+      <td>{{ r.league_name }}</td>
+      <td>{{ r.espn_team_id }}</td>
+      <td>{{ r.email or "—" }}</td>
+      <td>
+        {% if r.telegram_id %}{{ r.telegram_id }}
+        {% else %}<span class="muted">nao configurado</span>{% endif %}
+      </td>
+      <td>
+        {% if r.deleted_at %}<span class="pill del">Excluido</span>
+        {% elif r.is_active %}<span class="pill on">Ativo</span>
+        {% else %}<span class="pill off">Inativo</span>{% endif %}
+      </td>
+      <td class="muted">{{ r.created_at.strftime("%d/%m/%Y") }}</td>
+      <td style="white-space:nowrap;text-align:right">
+        {% if r.deleted_at %}
+          <form class="inline" method="post" action="/users/{{ r.id }}/restore">
+            <button class="btn tiny">Restaurar</button>
+          </form>
+        {% else %}
+          <a class="btn tiny" href="/users/{{ r.id }}/edit">Editar</a>
+          <form class="inline" method="post" action="/users/{{ r.id }}/delete"
+                onsubmit="return confirm('Excluir {{ r.name }}? O registro fica no banco como soft delete.')">
+            <button class="btn tiny danger">Excluir</button>
+          </form>
+        {% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+
+<p class="hint" style="margin-top:16px">
+  <strong>Ativo</strong> = recebe os relatorios. <strong>Inativo</strong> = fica
+  cadastrado mas nao notifica. <strong>Excluido</strong> = soft delete; os dados
+  continuam no banco para historico.
+</p>
+{% endblock %}

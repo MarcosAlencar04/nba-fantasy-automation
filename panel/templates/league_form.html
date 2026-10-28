@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% set active_nav = "leagues" %}
+{% block title %}{{ "Editar" if row else "Nova" }} liga · NBA Fantasy{% endblock %}
+
+{% block content %}
+<h1>{{ "Editar liga" if row else "Nova liga" }}</h1>
+<div class="sub">
+  {% if row %}id {{ row.id }} · criada em {{ row.created_at.strftime("%d/%m/%Y %H:%M") }}
+  {% else %}credenciais do ESPN para acessar a liga{% endif %}
+</div>
+
+<form method="post"
+      action="{{ '/leagues/%s/edit' % row.id if row else '/leagues/new' }}">
+  <div class="card" style="padding:22px">
+
+    <div class="grid">
+      <div class="field">
+        <label for="name">Nome da liga</label>
+        <input id="name" name="name" type="text" required
+               value="{{ row.name if row else '' }}" placeholder="Liga dos amigos">
+      </div>
+      <div class="field">
+        <label for="espn_league_id">ESPN leagueId</label>
+        <input id="espn_league_id" name="espn_league_id" type="text" required
+               value="{{ row.espn_league_id if row else '' }}"
+               placeholder="1152911770" inputmode="numeric">
+        <div class="hint">O <code>leagueId=</code> da URL da liga.</div>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="espn_swid">ESPN_SWID</label>
+      <input id="espn_swid" name="espn_swid" type="text" required
+             value="{{ row.espn_swid if row else '' }}"
+             placeholder="{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}">
+      <div class="hint">Do cookie <code>SWID</code> do ESPN no navegador.</div>
+    </div>
+
+    <div class="field">
+      <label for="espn_s2">ESPN_S2</label>
+      <input id="espn_s2" name="espn_s2" type="password" required
+             value="{{ row.espn_s2 if row else '' }}"
+             placeholder="AEAJ...">
+      <div class="hint">
+        Cookie <code>espn_s2</code>. E um segredo: da acesso de dono na liga e
+        expira — se o agente parar de ler o ESPN, atualize aqui.
+      </div>
+    </div>
+
+    <div class="field check">
+      <input id="is_active" name="is_active" type="checkbox" value="1"
+             {{ 'checked' if (not row) or row.is_active else '' }}>
+      <label for="is_active">Liga ativa</label>
+    </div>
+
+  </div>
+
+  <div class="bar" style="margin-top:18px">
+    <button class="btn primary" type="submit">
+      {{ "Salvar" if row else "Criar liga" }}
+    </button>
+    <a class="btn" href="/leagues?status=all">Cancelar</a>
+  </div>
+</form>
+{% endblock %}

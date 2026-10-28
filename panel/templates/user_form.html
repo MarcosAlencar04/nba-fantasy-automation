@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% set active_nav = "users" %}
+{% block title %}{{ "Editar" if row else "Novo" }} usuario · NBA Fantasy{% endblock %}
+
+{% block content %}
+<h1>{{ "Editar usuario" if row else "Novo usuario" }}</h1>
+<div class="sub">
+  {% if row %}id {{ row.id }} · criado em {{ row.created_at.strftime("%d/%m/%Y %H:%M") }}
+  {% else %}o time precisa existir na liga escolhida{% endif %}
+</div>
+
+<form method="post"
+      action="{{ '/users/%s/edit' % row.id if row else '/users/new' }}">
+  <div class="card" style="padding:22px">
+
+    <div class="field">
+      <label for="league_id">Liga</label>
+      <select id="league_id" name="league_id" required>
+        {% for l in leagues %}
+          <option value="{{ l.id }}"
+            {{ 'selected' if row and row.league_id == l.id else '' }}>{{ l.name }}</option>
+        {% endfor %}
+      </select>
+      <div class="hint">O <code>team_id</code> e unico dentro da liga.</div>
+    </div>
+
+    <div class="grid">
+      <div class="field">
+        <label for="name">Nome do dono</label>
+        <input id="name" name="name" type="text" required
+               value="{{ row.name if row else '' }}" placeholder="Marcos">
+      </div>
+      <div class="field">
+        <label for="espn_team_id">ESPN team_id</label>
+        <input id="espn_team_id" name="espn_team_id" type="text" required
+               value="{{ row.espn_team_id if row else '' }}"
+               placeholder="7" inputmode="numeric">
+        <div class="hint">Numero do <code>teamId=</code> na URL do time.</div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="field">
+        <label for="email">E-mail</label>
+        <input id="email" name="email" type="text"
+               value="{{ row.email or '' if row else '' }}"
+               placeholder="alguem@exemplo.com">
+        <div class="hint">Vazio = nao envia e-mail para este usuario.</div>
+      </div>
+      <div class="field">
+        <label for="telegram_id">Telegram chat_id</label>
+        <input id="telegram_id" name="telegram_id" type="text"
+               value="{{ row.telegram_id or '' if row else '' }}"
+               placeholder="123456789">
+        <div class="hint">
+          So numeros (grupo usa negativo). Vazio = nao envia Telegram.
+        </div>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="notes">Notas</label>
+      <textarea id="notes" name="notes"
+                placeholder="ex.: entrou em outubro, prefere so e-mail">{{ row.notes or '' if row else '' }}</textarea>
+    </div>
+
+    <div class="field check">
+      <input id="is_active" name="is_active" type="checkbox" value="1"
+             {{ 'checked' if (not row) or row.is_active else '' }}>
+      <label for="is_active">Ativo (recebe os relatorios)</label>
+    </div>
+
+  </div>
+
+  <div class="bar" style="margin-top:18px">
+    <button class="btn primary" type="submit">
+      {{ "Salvar" if row else "Criar usuario" }}
+    </button>
+    <a class="btn" href="/users?status=all">Cancelar</a>
+  </div>
+</form>
+{% endblock %}

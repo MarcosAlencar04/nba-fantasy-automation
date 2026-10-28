@@ -5,3 +5,7 @@ reports/
 .cache/
 __pycache__/
 *.pyc
+
+# painel
+panel/__pycache__/
+.panel-preview.html

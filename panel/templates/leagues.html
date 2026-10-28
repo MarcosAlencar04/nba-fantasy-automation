@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% set active_nav = "leagues" %}
+{% block title %}Ligas · NBA Fantasy{% endblock %}
+
+{% block content %}
+<h1>Ligas</h1>
+<div class="sub">
+  Credenciais do ESPN por liga. Os cookies (<code>ESPN_SWID</code>/<code>ESPN_S2</code>)
+  dao acesso de dono — este painel exige login por isso.
+</div>
+
+<div class="bar filters">
+  {% for key, val in filters.items() %}
+    {% if key != "all" %}
+    <a href="/leagues?status={{ key }}"
+       class="{{ 'on' if status == key else '' }}">{{ val[1] }}</a>
+    {% endif %}
+  {% endfor %}
+  {% if status == "all" %}<a href="/leagues?status=all" class="on">Todos os vivos</a>{% endif %}
+  <span style="flex:1"></span>
+  <a class="btn primary" href="/leagues/new">+ Nova liga</a>
+</div>
+
+{% if not rows %}
+  <div class="card"><div style="padding:22px" class="muted">
+    Nenhuma liga nesta visao. Cadastre uma antes de criar usuarios.
+  </div></div>
+{% else %}
+<div class="card">
+<table>
+  <thead>
+    <tr>
+      <th>#</th><th>Nome</th><th>leagueId</th><th>Usuarios</th>
+      <th>Status</th><th>Criado</th><th></th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for r in rows %}
+    <tr class="{{ 'dead' if r.deleted_at else '' }}">
+      <td class="muted">{{ r.id }}</td>
+      <td><strong>{{ r.name }}</strong></td>
+      <td>{{ r.espn_league_id }}</td>
+      <td>{{ r.user_count }}</td>
+      <td>
+        {% if r.deleted_at %}<span class="pill del">Excluida</span>
+        {% elif r.is_active %}<span class="pill on">Ativa</span>
+        {% else %}<span class="pill off">Inativa</span>{% endif %}
+      </td>
+      <td class="muted">{{ r.created_at.strftime("%d/%m/%Y") }}</td>
+      <td style="white-space:nowrap;text-align:right">
+        {% if r.deleted_at %}
+          <form class="inline" method="post" action="/leagues/{{ r.id }}/restore">
+            <button class="btn tiny">Restaurar</button>
+          </form>
+        {% else %}
+          <a class="btn tiny" href="/leagues/{{ r.id }}/edit">Editar</a>
+          <form class="inline" method="post" action="/leagues/{{ r.id }}/delete"
+                onsubmit="return confirm('Excluir a liga {{ r.name }}? Os usuarios dela NAO sao excluidos.')">
+            <button class="btn tiny danger">Excluir</button>
+          </form>
+        {% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}
