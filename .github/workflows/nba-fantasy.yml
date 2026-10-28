@@ -43,16 +43,17 @@ jobs:
 
   # Os times vem de listas posicionais nos secrets:
   #
-  #   ESPN_TEAM_ID      = 7,9
-  #   EMAIL_TO          = marcos@x.com,amigo@y.com
-  #   TELEGRAM_CHAT_ID  = 111,XXX
+  #   ESPN_TEAM_ID      = 7,9,11
+  #   EMAIL_TO          = marcos@x.com,amigo@y.com,outro@z.com
+  #   TELEGRAM_CHAT_ID  = 111,XXX,333
   #
   # A ordem e o pareamento: a posicao N de ESPN_TEAM_ID e o time da posicao N
-  # dos destinatarios. ESPN_TEAM_ID e quem manda no tamanho da lista, porque sem
-  # time nao ha o que analisar.
+  # dos destinatarios. ESPN_TEAM_ID e quem manda no tamanho da lista.
   #
-  # Este job conta as entradas e monta o matrix so com os indices, entao nenhum
-  # e-mail ou chat id aparece na lista de jobs do Actions.
+  # A normalizacao fica em teams.py, usado por ESTE job e pelo job do agente. A
+  # versao anterior fazia `awk -F,` aqui e um heredoc Python la, e as duas
+  # discordavam quando a lista tinha virgula final ou quebra de linha — o matrix
+  # ganhava indices sem time e o run quebrava.
   times:
     needs: gate
     # Sem isso este job subiria nas 48 execucoes do dia so para montar o matrix.
@@ -62,38 +63,19 @@ jobs:
     outputs:
       matrix: ${{ steps.load.outputs.matrix }}
     env:
-      TEAM_IDS: ${{ secrets.ESPN_TEAM_ID }}
-      EMAILS: ${{ secrets.EMAIL_TO }}
-      CHATS: ${{ secrets.TELEGRAM_CHAT_ID }}
+      ESPN_TEAM_ID: ${{ secrets.ESPN_TEAM_ID }}
+      EMAIL_TO: ${{ secrets.EMAIL_TO }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
     steps:
+      - uses: actions/checkout@v4
+
       - name: Contar times
         id: load
         run: |
-          set -u
-          clean=$(printf '%s' "$TEAM_IDS" | tr -d ' ')
-          if [ -z "$clean" ]; then
-            echo "erro: ESPN_TEAM_ID vazio. Defina um ou mais team ids separados por virgula." >&2
-            exit 1
-          fi
-
-          count=$(printf '%s' "$clean" | awk -F',' '{print NF}')
-
-          # Aviso quando as listas de destinatarios tem tamanho diferente: as
-          # posicoes que faltam ficam sem aquele canal (nao herdam de ninguem).
-          n_mail=$(printf '%s' "$EMAILS" | tr -d ' ' | awk -F',' 'NF{print NF}')
-          n_chat=$(printf '%s' "$CHATS" | tr -d ' ' | awk -F',' 'NF{print NF}')
-          echo "times=$count emails=${n_mail:-0} chats=${n_chat:-0}"
-          if [ "${n_mail:-0}" -ne "$count" ]; then
-            echo "aviso: EMAIL_TO tem ${n_mail:-0} entrada(s) para $count time(s)" >&2
-          fi
-          if [ "${n_chat:-0}" -ne "$count" ]; then
-            echo "aviso: TELEGRAM_CHAT_ID tem ${n_chat:-0} entrada(s) para $count time(s)" >&2
-          fi
-
-          matrix=$(python3 -c \
-            'import json,sys; n=int(sys.argv[1]); print(json.dumps({"include":[{"index":i} for i in range(n)]}))' \
-            "$count")
-          echo "matrix=$matrix"
+          set -eu
+          # So os indices vao para o matrix: e-mails e chat ids nao aparecem na
+          # lista de jobs do Actions.
+          matrix=$(python3 teams.py matrix)
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   agente:
@@ -112,11 +94,11 @@ jobs:
     env:
       MODE: ${{ github.event.schedule == '0 13 * * *' && 'morning' || github.event.inputs.mode || 'gate' }}
       INDEX: ${{ matrix.index }}
-      # Listas completas, na ordem dos times. O passo "Resolver destinatario"
-      # recorta a posicao INDEX de cada uma.
-      ALL_TEAM_IDS: ${{ secrets.ESPN_TEAM_ID }}
-      ALL_EMAILS: ${{ secrets.EMAIL_TO }}
-      ALL_CHATS: ${{ secrets.TELEGRAM_CHAT_ID }}
+      # Listas completas. O passo "Resolver destinatario" recorta a posicao
+      # INDEX e sobrescreve estas variaveis no $GITHUB_ENV.
+      ESPN_TEAM_ID: ${{ secrets.ESPN_TEAM_ID }}
+      EMAIL_TO: ${{ secrets.EMAIL_TO }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       # Credenciais da liga: compartilhadas por todos os times.
       ESPN_LEAGUE_ID: ${{ secrets.ESPN_LEAGUE_ID }}
       ESPN_SWID: ${{ secrets.ESPN_SWID }}
@@ -132,44 +114,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Recorta a posicao INDEX das tres listas. Uma entrada vazia (ou um
+      # Recorta a posicao INDEX das tres listas, com a mesma normalizacao que o
+      # job `times` usou para montar o matrix. Uma entrada vazia (ou um
       # placeholder como "XXX") desliga aquele canal para este time — nao cai no
       # destinatario de outro, senao o relatorio vazaria para a pessoa errada.
       - name: Resolver destinatario
         run: |
-          set -u
-
-          pick() {
-            python3 - "$1" "$2" <<'PY'
-          import sys
-          items = [x.strip() for x in sys.argv[1].split(",")]
-          i = int(sys.argv[2])
-          print(items[i] if 0 <= i < len(items) else "")
-          PY
-          }
-
-          team_id=$(pick "${ALL_TEAM_IDS:-}" "$INDEX")
-          email=$(pick "${ALL_EMAILS:-}" "$INDEX")
-          chat=$(pick "${ALL_CHATS:-}" "$INDEX")
-
-          if [ -z "$team_id" ]; then
-            echo "erro: nenhum ESPN_TEAM_ID na posicao $INDEX" >&2
-            exit 1
-          fi
-
-          # O chat id do Telegram e sempre numerico (grupos usam negativo).
-          # Qualquer outra coisa ("XXX", vazio, lixo) significa nao configurado.
-          case "$chat" in
-            -*) ;;
-            *[!0-9]*) [ -n "$chat" ] && echo "aviso: chat id '$chat' nao e numerico; Telegram desligado para este time" >&2; chat="" ;;
-          esac
-
-          echo "ESPN_TEAM_ID=$team_id" >> "$GITHUB_ENV"
-          echo "EMAIL_TO=$email" >> "$GITHUB_ENV"
-          echo "TELEGRAM_CHAT_ID=$chat" >> "$GITHUB_ENV"
-
-          echo "time #$INDEX -> team_id=$team_id | " \
-               "email=${email:-<nenhum>} | telegram=${chat:-<nenhum>}"
+          set -eu
+          python3 teams.py resolve "$INDEX" >> "$GITHUB_ENV"
 
       - uses: actions/setup-python@v5
         with:

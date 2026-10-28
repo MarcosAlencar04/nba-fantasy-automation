@@ -163,12 +163,13 @@ diferentes, voce recebe tres emails — um por jogo, no momento de cada um.
 
 Os times vem de **listas posicionais** nos secrets. A ordem e o pareamento: a
 posicao N de `ESPN_TEAM_ID` e o time que envia para a posicao N de `EMAIL_TO` e
-de `TELEGRAM_CHAT_ID`.
+de `TELEGRAM_CHAT_ID`. Nao ha limite de quantidade: adicionar uma pessoa e' so
+acrescentar mais uma entrada nas tres listas.
 
 ```dotenv
-ESPN_TEAM_ID=7,9
-EMAIL_TO=marcos@exemplo.com,amigo@exemplo.com
-TELEGRAM_CHAT_ID=123456789,XXX
+ESPN_TEAM_ID=7,9,11
+EMAIL_TO=marcos@exemplo.com,amigo@exemplo.com,outro@exemplo.com
+TELEGRAM_CHAT_ID=123456789,XXX,987654321
 ```
 
 | Secret | Papel |
@@ -179,7 +180,15 @@ TELEGRAM_CHAT_ID=123456789,XXX
 
 `ESPN_TEAM_ID` e quem manda no tamanho porque sem time nao ha o que analisar. Se
 `EMAIL_TO` ou `TELEGRAM_CHAT_ID` tiver menos entradas, os times que sobram ficam
-sem aquele canal — o job roda e apenas nao notifica por ele.
+sem aquele canal — o job roda e apenas nao notifica por ele. Sobrando entradas,
+as extras sao ignoradas com aviso no log.
+
+**O formato da lista e' tolerante**: virgula final, espacos depois da virgula e
+quebra de linha (comum ao colar no campo de secret do GitHub) sao normalizados,
+e entradas vazias sao descartadas. `7,9,11,` e `7\n9\n11` viram os mesmos 3
+times. A normalizacao fica em `teams.py`, usado tanto pelo job que monta o
+matrix quanto pelo job do agente — antes as duas pontas usavam parsers diferentes
+e discordavam justamente nesses formatos.
 
 **Placeholder `XXX` funciona como "nao configurado".** O chat id do Telegram e
 sempre numerico (grupos usam negativo), entao qualquer outra coisa e ignorada
@@ -203,8 +212,8 @@ No Actions, o fluxo tem tres jobs:
 | Job | Quantos | O que faz |
 |---|---|---|
 | `gate` | 1 | decide se ha jogo na janela; se nao, nada mais roda |
-| `times` | 1 | conta as entradas de `ESPN_TEAM_ID` e monta o matrix de indices |
-| `agente` | 1 por time | recorta a posicao do time e roda a analise |
+| `times` | 1 | roda `teams.py matrix` e expoe os indices |
+| `agente` | 1 por time | roda `teams.py resolve <indice>` e a analise |
 
 O gate fica **fora** do matrix de proposito: o placar da NBA e o mesmo para
 todos, entao nao faz sentido pagar um spin-up por time para descobrir que nao ha

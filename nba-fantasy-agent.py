@@ -111,12 +111,20 @@ def _env(name):
 
 
 def _env_first(name):
-    """Primeira entrada de uma variavel em lista (separada por virgula).
+    """Primeira entrada de uma variavel em lista.
 
     ESPN_TEAM_ID aceita lista posicional quando rodando na nuvem, onde cada time
     e uma execucao. Rodando local, vale o primeiro.
+
+    Aceita virgula, quebra de linha e espaco como separador porque colar a lista
+    no campo de secret do GitHub costuma trazer esses caracteres. Entradas vazias
+    sao ignoradas, entao uma virgula final nao devolve string vazia.
     """
-    return _env(name).split(",")[0].strip()
+    raw = re.sub(r"[\s,]+", ",", _env(name))
+    for item in raw.split(","):
+        if item:
+            return item
+    return ""
 
 
 def _chat_id_set() -> bool:

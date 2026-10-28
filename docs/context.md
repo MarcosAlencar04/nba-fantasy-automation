@@ -126,6 +126,7 @@ Funções principais:
 | `nba_fantasy_agent.py` | O agente. |
 | `gate.py` | Portão do GitHub Actions: libera a execução só na janela de 30 min antes do 1º jogo. |
 | `.github/workflows/nba-fantasy.yml` | Agendamento na nuvem (cron da manhã + a cada 30 min, 1 job por time). |
+| `teams.py` | Normaliza as listas posicionais de times dos secrets (usado pelos jobs `times` e `agente`). |
 | `scheduler.py` | Agendador alternativo para rodar localmente (loop contínuo). |
 | `systemd/nba-fantasy.service` | Unit do systemd para o agendador local. |
 | `roster.csv` | Removido: o elenco vem da API do ESPN. |
@@ -337,10 +338,12 @@ A comparação de escalação é por **conjunto de nomes**, para não acusar mud
 Os times vêm de **listas posicionais nos secrets**, sem arquivo de configuração. `fetch_espn()` já lê todos os times da liga em uma chamada, então o custo de um time extra é apenas mais uma execução do agente — a coleta de dados da NBA é idêntica.
 
 ```dotenv
-ESPN_TEAM_ID=7,9
-EMAIL_TO=marcos@x.com,amigo@y.com
-TELEGRAM_CHAT_ID=123456789,XXX
+ESPN_TEAM_ID=7,9,11
+EMAIL_TO=marcos@x.com,amigo@y.com,outro@z.com
+TELEGRAM_CHAT_ID=123456789,XXX,987654321
 ```
+
+Não há limite de quantidade: adicionar uma pessoa é só acrescentar uma entrada nas três listas.
 
 | Secret | Papel |
 |---|---|
@@ -353,10 +356,23 @@ O workflow tem três jobs:
 | Job | Quantos | Papel |
 |---|---|---|
 | `gate` | 1 | roda `gate.py` e expõe `run` |
-| `times` | 1 | conta as entradas de `ESPN_TEAM_ID` → matrix `[{index: 0}, {index: 1}]` |
-| `agente` | 1 por índice | recorta a posição das três listas e roda a análise |
+| `times` | 1 | roda `teams.py matrix` → `[{index: 0}, {index: 1}, {index: 2}]` |
+| `agente` | 1 por índice | roda `teams.py resolve <índice>` e a análise |
 
 O gate fica **fora** do matrix porque o placar da NBA é global: rodá-lo por time multiplicaria spin-ups para chegar à mesma resposta. O matrix só expõe `index`, então e-mails e chat ids não aparecem na UI do Actions.
+
+**Parsing centralizado em `teams.py`.** Antes o job `times` contava com `awk -F,` e o job do agente recortava com um heredoc Python — dois parsers que discordavam justamente nos formatos que colar num campo de secret produz:
+
+| Entrada | `awk -F,` (antigo) | `teams.py` (atual) |
+|---|---|---|
+| `7,9,11` | 3 | 3 |
+| `7,9,11,` (vírgula final) | **4** → índice 3 sem time → job falha | 3 |
+| `7\n9\n11` (quebra de linha) | **1** → só 1 time, id inválido | 3 |
+| `7,,11` | **3** → índice 1 sem time | 2 |
+
+`split_list` trata `,`, espaço, tab e quebra de linha como separadores e **descarta entradas vazias**, então vírgula final e separadores repetidos não geram índice fantasma. `;` fica de fora de propósito: ele separa vários destinatários do **mesmo** time.
+
+`teams.py` valida que cada `ESPN_TEAM_ID` é numérico e aborta com a posição exata do problema. O diagnóstico (`times=3 emails=3 chats=3`) vai para **stderr**: o stdout vai inteiro para o `$GITHUB_OUTPUT`, e qualquer linha extra corromperia o JSON do matrix.
 
 **Semântica das posições** (crítica para privacidade):
 
@@ -365,6 +381,7 @@ O gate fica **fora** do matrix porque o placar da NBA é global: rodá-lo por ti
 | vazia | canal desligado — **não** herda o destinatário de outro time |
 | `XXX` ou não numérica em `TELEGRAM_CHAT_ID` | Telegram desligado para aquele time |
 | lista mais curta que `ESPN_TEAM_ID` | os times excedentes ficam sem aquele canal |
+| lista mais longa que `ESPN_TEAM_ID` | as entradas extras são ignoradas, com aviso |
 
 Destinatário não tem fallback de propósito: se tivesse, o relatório do time de outra pessoa cairia na caixa de entrada do dono do repositório.
 
@@ -372,7 +389,7 @@ Destinatário não tem fallback de propósito: se tivesse, o relatório do time 
 
 `_chat_id_set()` valida que o chat id é numérico (aceitando negativo para grupos), para que um placeholder como `XXX` no `.env` não vire tentativa de envio com erro.
 
-**Rodando local**, a lista também vale: `_env_first()` usa a primeira posição de `ESPN_TEAM_ID`, e `send_email` aceita `,` e `;` como separadores — então `EMAIL_TO` com vários endereços manda para todos, sem noção de posição.
+**Rodando local**, a lista também vale: `_env_first()` usa a primeira posição de `ESPN_TEAM_ID` (com o mesmo tratamento de separadores), e `send_email` aceita `,` e `;` — então `EMAIL_TO` com vários endereços manda para todos, sem noção de posição.
 
 ### 5.12 Cache
 
