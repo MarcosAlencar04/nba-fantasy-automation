@@ -1,0 +1,119 @@
+<!doctype html>
+<!--
+  Pagina PUBLICA de sugestoes.
+
+  Nao estende base.html de proposito: o base tem a navegacao do painel (Usuarios,
+  Ligas) e quem chega aqui foi convidado por link, nao e' administrador. Ficando
+  autocontida, nenhum link interno vaza para o cliente.
+
+  A chave chega por `?k=` e vai junto no `action` do form — e' ela que autoriza
+  o POST. Quem tem o link tem a chave: isso e' esperado neste desenho.
+-->
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Enviar sugestao · NBA Fantasy</title>
+<style>
+  :root {
+    --bg:#0a0d13; --card:#141a24; --soft:#1b2230; --line:#242e3d;
+    --ink:#eef2f8; --muted:#8b96a8; --orange:#f97316;
+    --green-bg:#10281c; --green:#4ade80;
+    --red-bg:#2a1417; --red:#f87171;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; min-height:100vh; background:var(--bg); color:var(--ink);
+    font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    display:flex; align-items:flex-start; justify-content:center; padding:40px 16px;
+  }
+  main { width:100%; max-width:560px; }
+  .brand { color:var(--orange); font-weight:700; letter-spacing:1.6px;
+           text-transform:uppercase; font-size:11px; display:block; margin-bottom:14px; }
+  h1 { font-size:22px; margin:0 0 6px; }
+  .sub { color:var(--muted); font-size:13px; margin-bottom:22px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px;
+          padding:24px; }
+  label { display:block; font-size:11px; text-transform:uppercase; letter-spacing:.6px;
+          color:var(--muted); margin-bottom:6px; font-weight:600; }
+  input[type=text], textarea {
+    width:100%; padding:10px 12px; border-radius:8px; border:1px solid var(--line);
+    background:var(--soft); color:var(--ink); font:inherit;
+  }
+  input[type=text]:focus, textarea:focus { outline:none; border-color:var(--orange); }
+  textarea { min-height:140px; resize:vertical; }
+  .field { margin-bottom:18px; }
+  .hint { color:var(--muted); font-size:11px; margin-top:6px; }
+  .btn {
+    width:100%; padding:11px 16px; border-radius:8px; border:1px solid var(--orange);
+    background:var(--orange); color:#1a0d02; font:inherit; font-weight:700;
+    font-size:14px; cursor:pointer;
+  }
+  .btn:hover { filter:brightness(1.07); }
+  .msg, .err { padding:12px 15px; border-radius:8px; margin-bottom:18px; font-size:13px; }
+  .msg { background:var(--green-bg); color:var(--green); border-left:3px solid var(--green); }
+  .err { background:var(--red-bg); color:var(--red); border-left:3px solid var(--red); }
+  /* Honeypot: fora da tela e fora da ordem de tabulacao. Nao use display:none
+     — varios robos pulam elementos escondidos por CSS e cairiam no formulario. */
+  .hp { position:absolute; left:-9999px; width:1px; height:1px; overflow:hidden; }
+  footer { color:var(--muted); font-size:11px; text-align:center; margin-top:18px; }
+  /* O Safari do iOS da zoom automatico ao focar um campo com fonte menor que
+     16px, e a pagina nunca mais volta ao tamanho normal. Quem chega aqui vem
+     de link no celular, entao 16px evita o efeito. */
+  @media (max-width:760px) {
+    input[type=text], textarea { font-size:16px; }
+    body { padding:24px 14px; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <span class="brand">NBA Fantasy</span>
+  <h1>Sua sugestao</h1>
+  <div class="sub">
+    Ideia de funcionalidade, algo confuso no relatorio, jogador que a analise
+    errou — escreva como preferir.
+  </div>
+
+  {% if ok %}
+    <div class="msg">
+      Recebido. Obrigado por escrever — sua sugestao chegou.
+    </div>
+  {% endif %}
+  {% if err %}<div class="err">{{ err }}</div>{% endif %}
+
+  <div class="card">
+    <form method="post" action="{{ '/sugestoes?k=' ~ k|urlencode }}" novalidate>
+      <div class="field">
+        <label for="name">Nome</label>
+        <input id="name" name="name" type="text" required
+               maxlength="{{ max_name }}" autocomplete="name"
+               value="{{ values.name }}" placeholder="Como devo te chamar">
+      </div>
+
+      <div class="field">
+        <label for="body">Sugestao</label>
+        <textarea id="body" name="body" required
+                  maxlength="{{ max_body }}"
+                  placeholder="Escreva aqui...">{{ values.body }}</textarea>
+        <div class="hint">
+          Ate {{ max_body }} caracteres. Voce pode enviar quantas quiser.
+        </div>
+      </div>
+
+      <!-- Honeypot: se vier preenchido, o POST e' descartado em silencio. -->
+      <div class="hp" aria-hidden="true">
+        <label for="website">Nao preencha</label>
+        <input id="website" name="website" type="text" tabindex="-1"
+               autocomplete="off">
+      </div>
+
+      <button class="btn" type="submit">Enviar sugestao</button>
+    </form>
+  </div>
+
+  <footer>Este link e pessoal. Nao e necessario criar conta nem senha.</footer>
+</main>
+</body>
+</html>

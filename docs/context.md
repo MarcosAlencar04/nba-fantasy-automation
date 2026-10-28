@@ -127,7 +127,7 @@ Funções principais:
 | `gate.py` | Portão do GitHub Actions: libera a execução só na janela de 30 min antes do 1º jogo. |
 | `.github/workflows/nba-fantasy.yml` | Agendamento na nuvem (cron da manhã + a cada 30 min, 1 job por time). |
 | `teams.py` | Fonte da lista de usuários: banco (padrão) ou secrets posicionais. Usado pelos jobs `times` e `agente`. |
-| `panel/` | Painel web de ligas e usuários (FastAPI + Jinja2, deploy no Vercel). |
+| `panel/` | Painel web de ligas e usuários (FastAPI + Jinja2, deploy no Vercel). Inclui o formulário público de sugestões em `/sugestoes`, protegido por `SUGGESTION_KEY`. |
 | `.github/dependabot.yml` | Atualiza actions e dependências Python mensalmente, para não voltar a acumular runtime depreciado. |
 | `scheduler.py` | Agendador alternativo para rodar localmente (loop contínuo). |
 | `systemd/nba-fantasy.service` | Unit do systemd para o agendador local. |

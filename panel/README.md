@@ -6,11 +6,14 @@ notifica e nao le o ESPN — ele so mantem o cadastro de quem recebe os relatori
 O GitHub Actions continua fazendo exatamente o que fazia. Nada do `nba-fantasy.yml`
 muda enquanto o agente nao passar a ler do banco (fase seguinte).
 
+Tem tambem um **formulario publico de sugestoes** (`/sugestoes`), que fica fora do
+Basic Auth e usa uma chave propria — veja *Formulario publico de sugestoes*.
+
 ```
 panel/
   app.py            FastAPI + Jinja2 (server-rendered, sem build step)
   db.py             todas as queries
-  schema.sql        duas tabelas, idempotente
+  schema.sql        tres tabelas, idempotente
   init_db.py        aplica o schema
   templates/        HTML
   requirements.txt
@@ -42,10 +45,23 @@ created_at                       is_active
 updated_at                       notes
 deleted_at                       created_at / updated_at / deleted_at
                                  UNIQUE* (league_id, espn_team_id)
+
+suggestions
+-----------
+id            PK
+name                             <- digitado, 1..120
+body                             <- digitado, 1..4000
+read_at                          <- NULL = nao lida
+created_at
+deleted_at
 ```
 
 `*` os indices unicos sao **parciais** (`WHERE deleted_at IS NULL`): recriar uma
 liga ou um time depois de excluido nao e bloqueado pelo registro antigo.
+
+`suggestions` nao tem FK nem relacao com `users`: o formulario e' publico, entao
+quem escreve nao precisa estar cadastrado. Guardamos apenas o nome e o texto
+digitados — sem IP, sem user-agent, sem cookie.
 
 ## Rodar local
 
@@ -60,9 +76,13 @@ docker run -d --name pg -e POSTGRES_PASSWORD=test -e POSTGRES_DB=panel \
 export DATABASE_URL='postgresql://postgres:test@127.0.0.1:55432/panel'
 export PANEL_USER=admin
 export PANEL_PASSWORD=troque-isto
+export SUGGESTION_KEY=$(python3 -c 'import secrets;print(secrets.token_urlsafe(24))')
 
 python init_db.py                      # aplica o schema
 uvicorn app:app --reload --port 8000   # abre em http://127.0.0.1:8000
+
+# o formulario publico (sem login) fica em:
+#   http://127.0.0.1:8000/sugestoes?k=$SUGGESTION_KEY
 ```
 
 ---
@@ -109,6 +129,7 @@ significaria manter duas branches em sincronia sem nenhum ganho.
    | `DATABASE_URL` | a connection string do Neon (com `-pooler`) |
    | `PANEL_USER` | seu usuario |
    | `PANEL_PASSWORD` | senha forte (nao reaproveite a do e-mail) |
+   | `SUGGESTION_KEY` | chave do formulario publico — veja abaixo |
 
 4. **Deploy**.
 
@@ -158,10 +179,53 @@ para criar a liga primeiro.
   liga. Nao compartilhe a senha do painel.
 - `vercel.json` nao expoe `/docs` (desligado no `FastAPI(...)`)
 
+## Formulario publico de sugestoes
+
+Uma unica rota fica fora do Basic Auth: `GET/POST /sugestoes`.
+
+```
+https://seu-projeto.vercel.app/sugestoes?k=<SUGGESTION_KEY>
+```
+
+Quem recebe esse link manda sugestao sem criar conta. As respostas aparecem em
+`/suggestions` (autenticado), na aba **Sugestoes** do menu.
+
+Gerar a chave:
+
+```bash
+python3 -c 'import secrets;print(secrets.token_urlsafe(24))'
+```
+
+Regras da chave — o formulario se **desliga** se alguma falhar:
+
+| Regra | Por que |
+|---|---|
+| minimo 16 caracteres | um POST aberto com chave de 4 digitos e' forcavel |
+| so `A-Z a-z 0-9 . _ ~ -` | a chave viaja na URL; `+` viraria espaco e o link daria 403 sem explicacao |
+| variavel ausente | fail closed, igual ao resto do painel |
+
+O que a rota faz e o que **nao** faz:
+
+- valida a chave com `hmac.compare_digest` (tempo constante)
+- limita nome a 120 e sugestao a 4000 caracteres, no app **e** no `CHECK` do banco
+- tem honeypot (`website`): robo recebe tela de sucesso e nada e' gravado
+- devolve o texto digitado quando a validacao falha (ninguem perde o que escreveu)
+- usa PRG (redirect apos POST): recarregar nao duplica o registro
+- **nao** tem rate limit. Uma chave vazada permite encher a tabela; nesse caso
+  troque a `SUGGESTION_KEY` (invalida o link antigo na hora) e exclua o lixo
+- **nao** manda e-mail nem notificacao quando chega sugestao. Veja em
+  `/suggestions` — o contador de nao lidas fica no topo
+
+O `?k=` tambem fica visivel no HTML da pagina (no `action` do form). Isso e'
+inerente ao desenho: quem tem o link tem a chave. Se um dia precisar de algo
+mais forte, o caminho e' trocar a chave por um cookie assinado emitido no
+primeiro acesso.
+
 ## O que **nao** esta implementado ainda
 
 - Sem historico de auditoria (quem alterou o que). O `updated_at` existe, o autor
   nao.
+- Sugestoes nao geram notificacao (e-mail/Telegram) — so aparecem no painel.
 
 ---
 

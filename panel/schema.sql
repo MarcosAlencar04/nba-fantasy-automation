@@ -60,3 +60,36 @@ CREATE TRIGGER leagues_touch BEFORE UPDATE ON leagues
 DROP TRIGGER IF EXISTS users_touch ON users;
 CREATE TRIGGER users_touch BEFORE UPDATE ON users
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- --------------------------------------------------------------------------
+-- Sugestoes
+--
+-- Preenchida por um formulario PUBLICO (rota /sugestoes, protegida por uma
+-- chave em SUGGESTION_KEY) e lida apenas no painel autenticado. Por isso nao
+-- tem chave estrangeira nem relacao com quem enviou: o conteudo e' o unico dado
+-- que guardamos, sem IP, user-agent ou qualquer identificador.
+--
+-- O CHECK no banco repete os limites validados no app: se algum dia a rota
+-- mudar, o banco ainda recusa texto vazio ou gigante.
+-- --------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS suggestions (
+    id         BIGSERIAL   PRIMARY KEY,
+    name       TEXT        NOT NULL
+                           CHECK (char_length(btrim(name)) BETWEEN 1 AND 120),
+    body       TEXT        NOT NULL
+                           CHECK (char_length(btrim(body)) BETWEEN 1 AND 4000),
+    -- NULL = ainda nao lida. E' o que separa "novas" de "lidas" na listagem.
+    read_at    TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at TIMESTAMPTZ
+);
+
+-- Indice parcial: a listagem padrao so olha as nao lidas e vivas, entao o
+-- indice nao precisa carregar o resto da tabela.
+CREATE INDEX IF NOT EXISTS suggestions_unread_idx
+    ON suggestions (created_at DESC)
+    WHERE read_at IS NULL AND deleted_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS suggestions_recent_idx
+    ON suggestions (created_at DESC)
+    WHERE deleted_at IS NULL;

@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% set active_nav = "suggestions" %}
+{% block title %}Sugestoes · NBA Fantasy{% endblock %}
+
+{% block content %}
+<h1>Sugestoes</h1>
+<div class="sub">
+  {{ rows|length }} registro(s) nesta visao
+  {%- if unread %} · <strong style="color:var(--amber)">{{ unread }} nao lida(s)</strong>
+  {%- endif %}
+  · chegam pelo formulario publico <code>/sugestoes</code>
+</div>
+
+<div class="bar filters">
+  {% for key, val in filters.items() %}
+    <a href="/suggestions?status={{ key }}"
+       class="{{ 'on' if status == key else '' }}">{{ val[1] }}</a>
+  {% endfor %}
+  <span style="flex:1"></span>
+  <a class="btn" href="/sugestoes" target="_blank" rel="noopener">Abrir formulario</a>
+</div>
+
+{% if status == "new" and not rows %}
+  <div class="card"><div style="padding:22px" class="muted">
+    Nenhuma sugestao nova.
+    <a href="/suggestions?status=all">Ver todas as vivas</a>.
+  </div></div>
+{% elif not rows %}
+  <div class="card"><div style="padding:22px" class="muted">
+    Nenhum registro nesta visao.
+  </div></div>
+{% else %}
+<div class="card">
+<table>
+  <thead>
+    <tr>
+      <th>#</th><th>Nome</th><th>Sugestao</th>
+      <th>Recebida</th><th>Status</th><th></th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for r in rows %}
+    <tr class="{{ 'dead' if r.deleted_at else '' }}">
+      <td class="muted">{{ r.id }}</td>
+      <td><strong style="overflow-wrap:anywhere">{{ r.name }}</strong></td>
+      <td>
+        {# `pre-wrap` preserva as quebras de linha digitadas; `anywhere` impede
+           que um link colado estique a tabela. #}
+        <div class="quote">{{ r.body }}</div>
+      </td>
+      <td class="muted" style="white-space:nowrap">
+        {{ r.created_at.strftime("%d/%m/%Y %H:%M") }}
+      </td>
+      <td>
+        {% if r.deleted_at %}<span class="pill del">Excluida</span>
+        {% elif r.read_at %}<span class="pill on">Lida</span>
+        {% else %}<span class="pill off">Nova</span>{% endif %}
+      </td>
+      <td style="white-space:nowrap;text-align:right">
+        {% if r.deleted_at %}
+          <form class="inline" method="post"
+                action="/suggestions/{{ r.id }}/restore">
+            <button class="btn tiny">Restaurar</button>
+          </form>
+        {% else %}
+          {% if r.read_at %}
+            <form class="inline" method="post"
+                  action="/suggestions/{{ r.id }}/unread">
+              <input type="hidden" name="back" value="{{ status }}">
+              <button class="btn tiny">Marcar nova</button>
+            </form>
+          {% else %}
+            <form class="inline" method="post"
+                  action="/suggestions/{{ r.id }}/read">
+              <input type="hidden" name="back" value="{{ status }}">
+              <button class="btn tiny">Marcar lida</button>
+            </form>
+          {% endif %}
+          <form class="inline" method="post"
+                action="/suggestions/{{ r.id }}/delete">
+            <input type="hidden" name="back" value="{{ status }}">
+            <button class="btn tiny danger">Excluir</button>
+          </form>
+        {% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}

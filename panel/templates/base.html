@@ -85,6 +85,14 @@
   .hint { color:var(--muted); font-size:11px; margin-top:5px; }
   .filters a { padding:5px 11px; border-radius:6px; font-size:12px; color:var(--muted); }
   .filters a.on { background:var(--soft); color:var(--ink); }
+  /* Texto digitado por terceiro (sugestoes) pode vir como uma unica palavra
+     gigante — link colado, hash, base64. Sem `overflow-wrap` ele nao quebra e
+     estica a tabela para milhares de pixels. `anywhere` (e nao `break-word`)
+     tambem reduz o min-content da celula, que e' o que o layout de tabela usa. */
+  .quote {
+    white-space:pre-wrap; overflow-wrap:anywhere;
+    max-width:520px; max-height:240px; overflow-y:auto;
+  }
   @media (max-width:760px) {
     .grid { grid-template-columns:1fr; }
     main { padding:14px; }
@@ -98,6 +106,8 @@
   <nav>
     <a href="/users"   class="{{ 'on' if active_nav == 'users'   else '' }}">Usuarios</a>
     <a href="/leagues" class="{{ 'on' if active_nav == 'leagues' else '' }}">Ligas</a>
+    <a href="/suggestions"
+       class="{{ 'on' if active_nav == 'suggestions' else '' }}">Sugestoes</a>
     <a href="/health" target="_blank">Saude</a>
   </nav>
 </header>

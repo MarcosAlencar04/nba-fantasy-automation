@@ -26,11 +26,24 @@ FILTERS: dict[str, tuple[str, str]] = {
     "all": ("{t}deleted_at IS NULL", "Todos os vivos"),
 }
 
+# Sugestoes nao tem `is_active`: o que separa as visoes e' ter sido lida.
+SUGGESTION_FILTERS: dict[str, tuple[str, str]] = {
+    "new": ("{t}read_at IS NULL AND {t}deleted_at IS NULL", "Novas"),
+    "read": ("{t}read_at IS NOT NULL AND {t}deleted_at IS NULL", "Lidas"),
+    "deleted": ("{t}deleted_at IS NOT NULL", "Excluidas"),
+    "all": ("{t}deleted_at IS NULL", "Todas as vivas"),
+}
 
-def _where(status: str, table: str = "") -> str:
+
+def _where(status: str, table: str = "",
+           filters: dict[str, tuple[str, str]] | None = None) -> str:
     """Fragmento WHERE do filtro, com as colunas qualificadas."""
     prefix = f"{table}." if table else ""
-    return FILTERS.get(status, FILTERS["active"])[0].format(t=prefix)
+    table_filters = filters or FILTERS
+    # Sem filtro explicito o padrao e' "ativos"; para sugestoes e' "todas",
+    # porque la nao existe o conceito de ativo.
+    fallback = FILTERS["active"] if filters is None else table_filters["all"]
+    return table_filters.get(status, fallback)[0].format(t=prefix)
 
 
 def conninfo() -> str:
@@ -202,4 +215,61 @@ def set_user_deleted(user_id: int, deleted: bool) -> None:
             "UPDATE users SET deleted_at = CASE WHEN %s THEN now() ELSE NULL END "
             "WHERE id = %s",
             (deleted, user_id),
+        )
+
+
+# --------------------------------------------------------------------------
+# Sugestoes
+# --------------------------------------------------------------------------
+# Limites duplicados aqui e no CHECK da tabela: o app valida para dar mensagem
+# amigavel, o banco valida para garantir o dado.
+MAX_SUGGESTION_NAME = 120
+MAX_SUGGESTION_BODY = 4000
+
+
+def create_suggestion(name: str, body: str) -> int:
+    """Grava uma sugestao vinda do formulario publico."""
+    with conn() as c:
+        row = c.execute(
+            "INSERT INTO suggestions (name, body) VALUES (%s, %s) RETURNING id",
+            (name, body),
+        ).fetchone()
+        return int(row["id"])
+
+
+def list_suggestions(status: str = "new") -> list[dict]:
+    """Nao lidas primeiro, depois as mais recentes."""
+    where = _where(status, "s", SUGGESTION_FILTERS)
+    with conn() as c:
+        return list(c.execute(
+            f"SELECT s.* FROM suggestions s WHERE {where} "
+            "ORDER BY s.read_at NULLS FIRST, s.created_at DESC"
+        ).fetchall())
+
+
+def count_suggestions_unread() -> int:
+    """Usado no cabecalho da listagem. Idx parcial cobre este WHERE."""
+    with conn() as c:
+        row = c.execute(
+            "SELECT count(*) AS n FROM suggestions "
+            "WHERE read_at IS NULL AND deleted_at IS NULL"
+        ).fetchone()
+        return int(row["n"])
+
+
+def set_suggestion_read(suggestion_id: int, read: bool) -> None:
+    with conn() as c:
+        c.execute(
+            "UPDATE suggestions SET read_at = "
+            "CASE WHEN %s THEN now() ELSE NULL END WHERE id = %s",
+            (read, suggestion_id),
+        )
+
+
+def set_suggestion_deleted(suggestion_id: int, deleted: bool) -> None:
+    with conn() as c:
+        c.execute(
+            "UPDATE suggestions SET deleted_at = "
+            "CASE WHEN %s THEN now() ELSE NULL END WHERE id = %s",
+            (deleted, suggestion_id),
         )

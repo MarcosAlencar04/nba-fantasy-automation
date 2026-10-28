@@ -38,7 +38,7 @@ def main() -> int:
         )
         tables = [r["table_name"] for r in cur.fetchall()]
         print("tabelas:", ", ".join(tables) or "(nenhuma)")
-        for t in ("leagues", "users"):
+        for t in ("leagues", "users", "suggestions"):
             if t in tables:
                 n = c.execute(f"SELECT count(*) AS n FROM {t}").fetchone()["n"]
                 print(f"  {t}: {n} linha(s)")
