@@ -164,8 +164,14 @@ jobs:
           if [ "$MODE" != "morning" ]; then
             ARGS="$ARGS --lineup-only"
           fi
-          echo "usuario: ${USER_NAME:-<sem nome>} (team_id $ESPN_TEAM_ID) | modo: $MODE"
-          echo "destinatario: ${EMAIL_TO:-<sem email>} / ${TELEGRAM_CHAT_ID:-<sem telegram>}"
+          # Nome, e-mail e chat id vem do banco via $GITHUB_ENV e NAO sao
+          # mascarados pelo Actions (o mascaramento so vale para `secrets.X`).
+          # Como este repositorio e' publico, mostramos apenas a presenca de
+          # cada canal: o suficiente para diagnosticar, sem expor o cliente.
+          nome="${USER_NAME:-}"
+          if [ -n "$nome" ]; then nome="${nome:0:1}***"; else nome="<sem nome>"; fi
+          echo "usuario: $nome (team_id ${ESPN_TEAM_ID:-?}) | modo: $MODE"
+          echo "destinatario: $( [ -n "${EMAIL_TO:-}" ] && echo definido || echo '<sem email>') / $( [ -n "${TELEGRAM_CHAT_ID:-}" ] && echo definido || echo '<sem telegram>')"
           python nba-fantasy-agent.py $ARGS
 
       - name: Guardar o relatorio

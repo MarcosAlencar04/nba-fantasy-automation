@@ -204,6 +204,30 @@ def load_users() -> tuple[list[dict[str, Any]], str]:
 
 
 # --------------------------------------------------------------------------
+# Mascaramento para log
+# --------------------------------------------------------------------------
+# O repositorio e' publico, entao os logs do Actions (e o "Set up job" de cada
+# job do matrix) sao legiveis por qualquer pessoa. O GitHub so oculta valores
+# que vem DIRETO de `secrets.X`; o que este script le do banco nao passa por
+# esse filtro e sairia em texto limpo. Mascaramos aqui e mantemos apenas o que
+# serve para diagnosticar (o dado existe? o dominio esta certo?).
+def mask_email(addr: str) -> str:
+    """marcos@gmail.com -> ma***@gmail.com (o dominio revela typo de provedor)."""
+    if not addr:
+        return "<nenhum>"
+    local, sep, domain = addr.partition("@")
+    if not sep:
+        # Nao parece e-mail; nao ha o que preservar, entao nao mostre nada.
+        return "***"
+    return f"{local[:2]}***@{domain}" if len(local) > 2 else f"***@{domain}"
+
+
+def mask_name(name: str) -> str:
+    """Marcos -> M*** (prova que veio preenchido sem expor o nome)."""
+    return f"{name.strip()[0]}***" if name and name.strip() else "(sem nome)"
+
+
+# --------------------------------------------------------------------------
 # Comandos
 # --------------------------------------------------------------------------
 def cmd_matrix() -> int:
@@ -216,8 +240,12 @@ def cmd_matrix() -> int:
             "no painel (ou use os secrets posicionais)."
         )
 
-    matrix = {"include": [{"index": i, "name": u["name"] or f"time-{i}"}
-                          for i, u in enumerate(users)]}
+    # O valor do matrix aparece em texto limpo no "Set up job" de cada job
+    # filho, que tambem e' publico. Por isso o rotulo e' sempre `time-<i>`: o
+    # nome real do usuario nunca entra no matrix (o agente recebe o nome via
+    # `resolve`, escrito em $GITHUB_ENV e nao ecoado).
+    matrix = {"include": [{"index": i, "name": f"time-{i}"}
+                          for i, _ in enumerate(users)]}
 
     # Diagnostico SEMPRE em stderr: o stdout deste comando e' capturado inteiro
     # por `$(python3 teams.py matrix)` e vai para o $GITHUB_OUTPUT. Qualquer
@@ -226,8 +254,10 @@ def cmd_matrix() -> int:
     sem_chat = sum(1 for u in users if not u["telegram_id"])
     print(f"fonte={source} usuarios={len(users)} "
           f"sem_email={sem_email} sem_telegram={sem_chat}", file=sys.stderr)
+    # team_id fica visivel: e' o mesmo numero que aparece na URL publica do
+    # ESPN e e' o que permite casar um job do matrix com o time certo.
     for i, u in enumerate(users):
-        print(f"  #{i} {u['name'] or '(sem nome)'} team_id={u['espn_team_id']}",
+        print(f"  #{i} {mask_name(u['name'])} team_id={u['espn_team_id']}",
               file=sys.stderr)
 
     print(json.dumps(matrix))
@@ -262,7 +292,8 @@ def cmd_resolve(index_raw: str) -> int:
     email = u["email"]
     chat = chat_ok(u["telegram_id"])
     if email and "@" not in email:
-        print(f"aviso: email '{email}' nao parece valido", file=sys.stderr)
+        print(f"aviso: EMAIL_TO do usuario #{index} nao tem '@' "
+              "(valor omitido do log)", file=sys.stderr)
 
     # Vai para o $GITHUB_ENV, sobrescrevendo o que veio dos secrets.
     _emit("ESPN_TEAM_ID", str(u["espn_team_id"]))
@@ -278,11 +309,14 @@ def cmd_resolve(index_raw: str) -> int:
         if u[field]:
             _emit(key, u[field])
 
-    # Log legivel (stderr, para nao contaminar o $GITHUB_ENV).
-    print(f"[{source}] #{index} {u['name'] or '(sem nome)'} -> "
+    # Log legivel (stderr, para nao contaminar o $GITHUB_ENV). Nome, e-mail e
+    # chat id saem mascarados porque este log fica publico; o que importa aqui
+    # e' saber se cada canal foi resolvido, nao para quem.
+    print(f"[{source}] #{index} {mask_name(u['name'])} -> "
           f"team_id={u['espn_team_id']} | "
-          f"email={email or '<nenhum>'} | telegram={chat or '<nenhum>'} | "
-          f"liga={u['espn_league_id'] or '<nenhuma>'}", file=sys.stderr)
+          f"email={mask_email(email)} | "
+          f"telegram={'sim' if chat else '<nenhum>'} | "
+          f"liga={'sim' if u['espn_league_id'] else '<nenhuma>'}", file=sys.stderr)
     return 0
 
 

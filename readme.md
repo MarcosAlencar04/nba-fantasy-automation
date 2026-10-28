@@ -294,3 +294,38 @@ O estado do dia fica em `.cache/scheduler_state.json`: reiniciar o processo nao 
 envio, e uma falha e tentada ate 3 vezes. Para manter sempre ativo no Linux, use o unit em
 `systemd/nba-fantasy.service` (`systemctl --user enable --now nba-fantasy`).
 
+## 7. Repositorio publico: o que fica visivel
+
+Rodar em repositorio **publico** libera os minutos do GitHub Actions, mas tudo
+que o workflow imprime passa a ser legivel por qualquer pessoa. O que vale saber:
+
+| Fica publico | Continua privado |
+|---|---|
+| O codigo e todo o historico git | Valores de `secrets.X` (o GitHub mascara) |
+| O log de cada run, inclusive o `Set up job` do matrix | O conteudo do banco (Neon) |
+| Os artifacts de `reports/` (7 dias) | Suas credenciais do ESPN e SMTP |
+
+O mascaramento do GitHub **so** vale para valores que vem direto de
+`secrets.X`. O que o workflow escreve em `$GITHUB_ENV`, como o e-mail do
+usuario lido do banco, sai em texto limpo se for ecoado. Por isso o codigo
+mascara antes de imprimir:
+
+- `teams.py` mostra `M***`, `ma***@gmail.com`, `telegram=sim` e `liga=sim`;
+- o matrix carrega apenas `time-0`, `time-1` (o nome do cliente nunca entra,
+  porque o valor do matrix aparece no `Set up job` de cada job filho);
+- o step do agente imprime so `definido` / `<sem email>` por canal.
+
+Os **artifacts** (`relatorio-*.md`) nao sao mascarados: eles contem o nome do
+time e o elenco analisado, que e' justamente o produto do relatorio. Se isso for
+um problema, remova o step `Guardar o relatorio` ou reduza `retention-days`.
+
+Nunca commite `.env`: ele esta no `.gitignore` desde o primeiro commit e nao ha
+credencial real no historico.
+
+## Licenca
+
+Codigo proprietario. Todos os direitos reservados. O repositorio ser publico
+serve para transparencia e para usar os minutos gratuitos do GitHub Actions -
+nao concede permissao de uso, copia ou redistribuicao.
+
+

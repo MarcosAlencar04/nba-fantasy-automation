@@ -2153,6 +2153,23 @@ def normalize_password(pwd):
     return pwd
 
 
+def mask_email(addr):
+    """marcos@gmail.com -> ma***@gmail.com.
+
+    Os logs do Actions ficam publicos (repositorio publico) e o GitHub so
+    oculta valores vindos DIRETO de `secrets.X`. O que o workflow escreve em
+    $GITHUB_ENV a partir do banco nao passa por esse filtro, entao qualquer
+    e-mail ecoado aqui apareceria em texto limpo. O dominio e' mantido porque e'
+    ele que explica o erro de remetente reescrito.
+    """
+    if not addr:
+        return "<nenhum>"
+    local, sep, domain = str(addr).partition("@")
+    if not sep:
+        return "***"
+    return f"{local[:2]}***@{domain}" if len(local) > 2 else f"***@{domain}"
+
+
 def sender_header(user, to):
     """Monta o cabecalho From respeitando o que o servidor SMTP aceita.
 
@@ -2171,10 +2188,11 @@ def sender_header(user, to):
 
     mismatch = bool(frm and user and domain(frm) != domain(user))
     if mismatch:
-        print(f"Email: EMAIL_FROM ({frm}) usa dominio diferente do SMTP_USER "
-              f"({user}). O provedor vai reescrever o remetente - usando "
-              f"'{name or 'NBA Fantasy'} <{user}>'. Para manter {frm}, verifique o "
-              "dominio no provedor (SPF/DKIM) ou use um servico transacional.",
+        print(f"Email: EMAIL_FROM ({mask_email(frm)}) usa dominio diferente do "
+              f"SMTP_USER ({mask_email(user)}). O provedor vai reescrever o "
+              f"remetente - usando '{name or 'NBA Fantasy'} <{mask_email(user)}>'. "
+              f"Para manter {mask_email(frm)}, verifique o dominio no provedor "
+              "(SPF/DKIM) ou use um servico transacional.",
               file=sys.stderr)
         base = user
         name = name or "NBA Fantasy"
@@ -2225,10 +2243,16 @@ def send_email(subject, text, html=None):
                 if user:
                     s.login(user, pwd)
                 s.send_message(msg)
-        print("Email:", f"enviado para {', '.join(to)}")
+        # Contagem, nao a lista: o log do Actions e' publico.
+        print("Email:", f"enviado para {len(to)} destinatario(s)")
         return True
     except Exception as ex:
-        print(f"Email: erro ({ex})", file=sys.stderr)
+        # Algumas excecoes do smtplib carregam os enderecos dentro da propria
+        # mensagem (SMTPRecipientsRefused traz um dict com os destinatarios
+        # recusados). Como o log do Actions e' publico, mascara antes de imprimir.
+        detail = re.sub(r"[\w.+-]+@[\w.-]+\.\w+",
+                        lambda m: mask_email(m.group(0)), str(ex))
+        print(f"Email: erro ({type(ex).__name__}: {detail})", file=sys.stderr)
         return False
 
 
