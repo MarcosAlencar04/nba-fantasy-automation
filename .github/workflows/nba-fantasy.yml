@@ -2,11 +2,24 @@ name: NBA Fantasy
 
 on:
   schedule:
-    # 10:00 em Brasilia (UTC-3). O cron do GitHub e sempre UTC.
-    - cron: "0 13 * * *"
-    # A cada 30 min: o gate libera a execucao 30 min antes de CADA jogo do dia,
-    # entao cada jogo gera o seu proprio aviso de escalacao.
-    - cron: "*/30 * * * *"
+    # ATENCAO: o `schedule` do Actions e' best-effort. A documentacao avisa que
+    # "high load times include the start of every hour" e que, com carga alta,
+    # "some queued jobs may be dropped". O cron antigo era `0 13 * * *` — minuto
+    # 0, o pior horario possivel — e simplesmente **nao disparou** em 28/10 nem
+    # em 29/10, ou seja, o relatorio da manha nao saiu duas vezes seguidas.
+    #
+    # Medido neste repositorio: 6 execucoes agendadas em ~48h, quando `*/30`
+    # deveria produzir ~96. Cerca de 6% das tentativas sobrevivem.
+    #
+    # Por isso a manha tem TRES tentativas (minutos fora do pico) e a
+    # notificacao usa uma trava no banco (`state.py`) para nao duplicar email:
+    # a primeira que passar envia, as outras saem sem notificar.
+    - cron: "7 13 * * *"      # 10:07 BRT - tentativa principal
+    - cron: "37 13 * * *"     # 10:37 BRT - retry 1
+    - cron: "7 14 * * *"      # 11:07 BRT - retry 2 (ultima rede de seguranca)
+    # Pre-jogo: minutos 5 e 35, tambem fora do minuto 0 (pico documentado).
+    # O gate libera a execucao 30 min antes de CADA jogo do dia.
+    - cron: "5,35 * * * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -30,7 +43,10 @@ jobs:
     outputs:
       run: ${{ steps.gate.outputs.run }}
     env:
-      MODE: ${{ github.event.schedule == '0 13 * * *' && 'morning' || github.event.inputs.mode || 'gate' }}
+      # Os tres crons da manha contam como modo `morning`. A comparacao usa uma
+      # lista (e nao `==` repetido) para nao esquecer um horario quando outro
+      # for adicionado.
+      MODE: ${{ contains(fromJSON('["7 13 * * *","37 13 * * *","7 14 * * *"]'), github.event.schedule) && 'morning' || github.event.inputs.mode || 'gate' }}
       # Janela do gate: 30 min antes de cada jogo. Com cron de 30 min, cada jogo
       # cai em exatamente uma execucao -> um aviso por jogo, sem repeticao.
       PREGAME_LEAD_MIN: "30"
@@ -111,7 +127,8 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.times.outputs.matrix) }}
     env:
-      MODE: ${{ github.event.schedule == '0 13 * * *' && 'morning' || github.event.inputs.mode || 'gate' }}
+      # Mesma expressao do job `gate`: os tres crons da manha viram `morning`.
+      MODE: ${{ contains(fromJSON('["7 13 * * *","37 13 * * *","7 14 * * *"]'), github.event.schedule) && 'morning' || github.event.inputs.mode || 'gate' }}
       INDEX: ${{ matrix.index }}
       # Fonte da lista. DATABASE_URL tem precedencia; os secrets posicionais so
       # sao usados quando ela nao existe (modo legado).
@@ -163,6 +180,12 @@ jobs:
           ARGS="--notify --out-dir reports/$INDEX"
           if [ "$MODE" != "morning" ]; then
             ARGS="$ARGS --lineup-only"
+          else
+            # Trava de retry: a manha tem tres crons porque o agendador do
+            # GitHub derruba a maioria das execucoes. O slot faz o agente
+            # reivindicar o dia no banco, entao so a primeira tentativa que
+            # passar envia email — as outras saem sem notificar.
+            ARGS="$ARGS --once-per-day morning"
           fi
           # Nome, e-mail e chat id vem do banco via $GITHUB_ENV e NAO sao
           # mascarados pelo Actions (o mascaramento so vale para `secrets.X`).

@@ -105,18 +105,48 @@ puro vai no mesmo email para clientes que nao renderizam HTML.
 
 ## 6. Agendar de graca na nuvem (GitHub Actions)
 
-Roda 2x por dia sem depender da sua maquina e sem custo:
+Roda sozinho sem depender da sua maquina e sem custo:
 
-1. **10h (Brasilia)**: relatorio completo.
-2. **30 min antes do primeiro jogo**: so roda se aquele momento estiver na janela
-   (`gate.py` verifica o horario do primeiro jogo na API do ESPN e libera a execucao).
+1. **~10h (Brasilia)**: relatorio completo, com tres tentativas de cron.
+2. **30 min antes de cada jogo**: so roda se aquele momento estiver na janela
+   (`gate.py` verifica o horario do jogo na API do ESPN e libera a execucao).
 
-O workflow e `.github/workflows/nba-fantasy.yml`. Ele usa dois cron triggers:
+O workflow e `.github/workflows/nba-fantasy.yml`. Ele usa quatro cron triggers:
 
 | Cron (UTC) | Quando | O que faz |
 |---|---|---|
-| `0 13 * * *` | 10h BRT | relatorio completo |
-| `*/30 * * * *` | a cada 30 min | `gate.py` libera a execucao 30 min antes de **cada** jogo do dia |
+| `7 13 * * *` | 10:07 BRT | relatorio completo (tentativa principal) |
+| `37 13 * * *` | 10:37 BRT | retentativa do relatorio |
+| `7 14 * * *` | 11:07 BRT | ultima retentativa do relatorio |
+| `5,35 * * * *` | a cada 30 min | `gate.py` libera a execucao 30 min antes de **cada** jogo do dia |
+
+### Por que tres tentativas (e nao um cron so)
+
+O `schedule` do GitHub Actions e' **best-effort**. A documentacao avisa que "high load
+times include the start of every hour" e que, com carga alta, "some queued jobs may be
+dropped".
+
+Isso nao e' teoria. Medido neste repositorio: **6 execucoes agendadas em ~48h** quando o
+cron `*/30` deveria ter produzido ~96 — cerca de 6% sobrevivem. E o antigo `0 13 * * *`
+(minuto 0, o pior horario possivel) simplesmente **nao disparou** em dois dias seguidos.
+
+Por isso:
+
+1. todos os crons fogem do minuto 0 (recomendacao literal da documentacao);
+2. a manha tem tres tentativas espalhadas em uma hora;
+3. `state.py` mantem uma trava no banco (`agent_notifications`) para que **so a primeira
+   tentativa que passar** notifique. As outras saem sem enviar, entao tres crons nao viram
+   tres emails.
+
+A trava e' por `(tipo, dia, time)`, no proprio Postgres do painel, e a tabela se cria
+sozinha na primeira execucao — nao ha passo manual. Se o envio falhar, a reserva e'
+liberada para a proxima tentativa. Sem `DATABASE_URL` (modo secrets) nao ha onde guardar a
+marca: o agente volta ao comportamento antigo.
+
+> **Limite conhecido:** o pre-jogo continua com uma chance por jogo (lead de 30 min e cron
+de 30 min). Com a taxa de ~6%, muitos avisos pre-jogo nao saem. Para garantir entrega
+diada, a saida e' um agendador externo chamando `workflow_dispatch` via API — o cron do
+GitHub nao oferece garantia.
 
 O `gate.py` olha apenas o relogio: consulta o placar do ESPN, lista os jogos que ainda vao
 comecar e libera a execucao quando algum deles comeca dentro de `PREGAME_LEAD_MIN` (30 min).

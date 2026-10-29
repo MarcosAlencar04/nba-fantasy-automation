@@ -50,6 +50,8 @@ import pandas as pd
 import requests
 from scipy.optimize import linear_sum_assignment
 
+import state
+
 try:
     from dotenv import load_dotenv
 
@@ -2795,7 +2797,8 @@ def notify(summary, today, telegram=False, email=False, digest=None):
 # --------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------
-def main():
+def build_parser() -> argparse.ArgumentParser:
+    """Parser separado de `main` para poder ser testado sem rodar a analise."""
     ap = argparse.ArgumentParser(description="Agente de NBA Fantasy (ESPN, H2H Points)")
     ap.add_argument("--team-id", type=int, default=None,
                     help="ID do seu time no ESPN (ou a variavel ESPN_TEAM_ID)")
@@ -2809,9 +2812,16 @@ def main():
     ap.add_argument("--notify", action="store_true", help="envia o resumo pelo Telegram e por email")
     ap.add_argument("--lineup-only", action="store_true",
                     help="relatorio enxuto: so escalacao e IR (usado no pre-jogo)")
+    ap.add_argument("--once-per-day", default=None, metavar="SLOT",
+                    help="reserva o envio no banco: so a primeira execucao do dia "
+                         "com este SLOT notifica (protege os retries do cron)")
     ap.add_argument("--refresh", action="store_true", help="ignora o cache de dados")
     ap.add_argument("--out-dir", default="reports")
-    opts = ap.parse_args()
+    return ap
+
+
+def main():
+    opts = build_parser().parse_args()
 
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -2923,11 +2933,28 @@ def main():
     if skip_reason:
         print(skip_reason, file=sys.stderr)
     elif summary and (want_telegram or want_email):
-        try:
-            notify(summary, today, telegram=want_telegram, email=want_email, digest=digest)
-        except Exception as ex:
-            traceback.print_exc()
-            print(f"Aviso: falha ao notificar ({ex}); o relatorio foi salvo normalmente.", file=sys.stderr)
+        # Trava de retry. O cron do Actions derruba a maioria das execucoes
+        # agendadas, entao o workflow agenda varias tentativas para o relatorio
+        # da manha. Sem esta reserva, cada tentativa que passasse mandaria
+        # outro email para o mesmo usuario no mesmo dia.
+        slot = getattr(opts, "once_per_day", None)
+        may_send = True
+        if slot:
+            may_send = state.claim(slot, team_id, today)
+            if not may_send:
+                print(f"ja enviado hoje (slot '{slot}', time {team_id}); "
+                      "esta execucao e' uma retentativa do cron e nao "
+                      "notifica de novo.", file=sys.stderr)
+        if may_send:
+            try:
+                notify(summary, today, telegram=want_telegram, email=want_email, digest=digest)
+            except Exception as ex:
+                # Devolve a reserva: sem isto, uma falha de SMTP queimaria a
+                # vaga do dia e as retentativas seguintes nao tentariam mais.
+                if slot:
+                    state.release(slot, team_id, today)
+                traceback.print_exc()
+                print(f"Aviso: falha ao notificar ({ex}); o relatorio foi salvo normalmente.", file=sys.stderr)
 
 
 if __name__ == "__main__":

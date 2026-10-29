@@ -93,3 +93,23 @@ CREATE INDEX IF NOT EXISTS suggestions_unread_idx
 CREATE INDEX IF NOT EXISTS suggestions_recent_idx
     ON suggestions (created_at DESC)
     WHERE deleted_at IS NULL;
+
+-- --------------------------------------------------------------------------
+-- Trava de envio do agente
+--
+-- O `schedule` do GitHub Actions e' best-effort: a maioria das execucoes
+-- agendadas e' derrubada. Por isso o workflow agenda tres crons para o relatorio
+-- da manha, e esta tabela garante que apenas a primeira tentativa que passar
+-- notifique — senao tres crons viram tres emails por usuario.
+--
+-- Mesma definicao de `state.py`, que tambem cria a tabela sozinho na primeira
+-- execucao. Manter aqui serve para o `init_db.py` deixar tudo pronto de uma vez
+-- e para o esquema ficar documentado num lugar so.
+-- --------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS agent_notifications (
+    kind     TEXT        NOT NULL,      -- 'morning', 'pre:<jogo>'
+    run_date DATE        NOT NULL,
+    team_id  INTEGER     NOT NULL,
+    sent_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (kind, run_date, team_id)
+);
