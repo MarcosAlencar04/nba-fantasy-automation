@@ -42,11 +42,20 @@ jobs:
     timeout-minutes: 5
     outputs:
       run: ${{ steps.gate.outputs.run }}
+      slot: ${{ steps.gate.outputs.slot }}
     env:
-      # Os tres crons da manha contam como modo `morning`. A comparacao usa uma
-      # lista (e nao `==` repetido) para nao esquecer um horario quando outro
-      # for adicionado.
-      MODE: ${{ contains(fromJSON('["7 13 * * *","37 13 * * *","7 14 * * *"]'), github.event.schedule) && 'morning' || github.event.inputs.mode || 'gate' }}
+      # Modo da execucao, em tres camadas:
+      #
+      # 1. `github.event_name == 'schedule'` vem primeiro por seguranca: num
+      #    dispatch o `github.event.schedule` e' nulo, e comparar nulo dentro de
+      #    `contains` pode avaliar como erro em vez de `false`. Com o `&&` curto-
+      #    circuitando, o `contains` nem e' avaliado fora do schedule.
+      # 2. `inputs.mode` (o contexto `inputs`, nao `github.event.inputs`) aplica o
+      #    `default: morning` do `workflow_dispatch`. Sem isto, um disparo pela
+      #    API **sem** `inputs` cairia em `gate`, porque `github.event.inputs`
+      #    nao recebe os defaults.
+      # 3. `gate` e' o resto (crons de pre-jogo).
+      MODE: ${{ (github.event_name == 'schedule' && contains(fromJSON('["7 13 * * *","37 13 * * *","7 14 * * *"]'), github.event.schedule)) && 'morning' || inputs.mode || 'gate' }}
       # Janela do gate: 30 min antes de cada jogo. Com cron de 30 min, cada jogo
       # cai em exatamente uma execucao -> um aviso por jogo, sem repeticao.
       PREGAME_LEAD_MIN: "30"
@@ -127,8 +136,13 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.times.outputs.matrix) }}
     env:
-      # Mesma expressao do job `gate`: os tres crons da manha viram `morning`.
-      MODE: ${{ contains(fromJSON('["7 13 * * *","37 13 * * *","7 14 * * *"]'), github.event.schedule) && 'morning' || github.event.inputs.mode || 'gate' }}
+      # Slot da trava de envio. Na manha o proprio agente usa `morning`; no
+      # pre-jogo vem do gate (ex.: `pre:20261030T2330`), derivado da hora do
+      # jogo. E' o que impede dois crons do mesmo minuto (GitHub + Cloudflare)
+      # de mandarem dois emails do mesmo jogo.
+      SLOT: ${{ needs.gate.outputs.slot }}
+      # Mesma expressao do job `gate` (ver comentario la).
+      MODE: ${{ (github.event_name == 'schedule' && contains(fromJSON('["7 13 * * *","37 13 * * *","7 14 * * *"]'), github.event.schedule)) && 'morning' || inputs.mode || 'gate' }}
       INDEX: ${{ matrix.index }}
       # Fonte da lista. DATABASE_URL tem precedencia; os secrets posicionais so
       # sao usados quando ela nao existe (modo legado).
@@ -180,6 +194,12 @@ jobs:
           ARGS="--notify --out-dir reports/$INDEX"
           if [ "$MODE" != "morning" ]; then
             ARGS="$ARGS --lineup-only"
+            # Pre-jogo tambem passa pela trava, com o slot que o gate derivou
+            # da hora do jogo. Se por algum motivo o slot vier vazio (dispatch
+            # manual), o agente segue sem deduplicar.
+            if [ -n "${SLOT:-}" ]; then
+              ARGS="$ARGS --once-per-day $SLOT"
+            fi
           else
             # Trava de retry: a manha tem tres crons porque o agendador do
             # GitHub derruba a maioria das execucoes. O slot faz o agente

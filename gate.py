@@ -24,13 +24,21 @@ ET = ZoneInfo("America/New_York")
 SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 
 
-def emit(run, reason):
+def emit(run, reason, slot=""):
+    """Escreve a decisao no $GITHUB_OUTPUT.
+
+    `slot` identifica a notificacao deste tick para a trava do banco
+    (`state.py`). Sem ele, o mesmo jogo seria avisado duas vezes quando duas
+    origens de cron coincidem — por exemplo GitHub Actions e Cloudflare
+    Workers rodando no mesmo minuto.
+    """
     print(f"{'executa' if run else 'ignora'}: {reason}", flush=True)
     out = os.getenv("GITHUB_OUTPUT")
     if out:
         with open(out, "a", encoding="utf-8") as fh:
             fh.write(f"run={'true' if run else 'false'}\n")
             fh.write(f"reason={reason}\n")
+            fh.write(f"slot={slot}\n")
 
 
 def lead_minutes():
@@ -120,7 +128,13 @@ def main():
     in_window = [g for g in games if timedelta(0) < g[0] - now <= lead]
     if in_window:
         names = ", ".join(f"{name} {tip.astimezone(ET):%H:%M}" for tip, name in in_window[:3])
-        emit(True, f"janela aberta: {names} ET")
+        # Slot pela hora do jogo mais cedo da janela, em UTC. Dois ticks nao
+        # caem na mesma janela (o cron tem o mesmo intervalo do lead), mas duas
+        # FONTES de cron podem: o slot e' igual nas duas, entao a trava do banco
+        # deixa so uma notificar. Varios jogos no mesmo horario compartilham o
+        # slot de proposito — e' um email so, cobrindo todos.
+        stamp = in_window[0][0].astimezone(timezone.utc).strftime("%Y%m%dT%H%M")
+        emit(True, f"janela aberta: {names} ET", slot=f"pre:{stamp}")
         return
 
     tip, name = games[0]
