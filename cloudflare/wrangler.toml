@@ -1,0 +1,35 @@
+#:schema node_modules/wrangler/config-schema.json
+
+# Worker responsavel APENAS por disparar o workflow do agente no horario certo.
+# Ele nao roda analise e nao fala com o ESPN: so faz POST em
+# `workflow_dispatch`. A analise continua no GitHub Actions.
+name = "nba-fantasy-dispatch"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+# Tudo em UTC, como no cron do GitHub. Nao existe campo de timezone aqui.
+#
+# Manha (10h BRT = 13h UTC): tres tentativas. A trava no banco (`state.py`)
+# garante um email por dia — as tentativas extras saem sem notificar.
+#
+# Pre-jogo: mesmos minutos do workflow (5 e 35). Com PREGAME_LEAD_MIN=30, cada
+# janela de jogo cai em exatamente um tick.
+[triggers]
+crons = [
+  "7 13 * * *",
+  "37 13 * * *",
+  "7 14 * * *",
+  "5,35 * * * *",
+]
+
+# Logs de cada invocacao do cron ficam disponiveis em Workers Logs. Sem isto,
+# uma falha so aparece como "1 erro" sem contexto.
+[observability]
+enabled = true
+
+[vars]
+# NAO coloque segredo aqui: [vars] fica no repositorio e aparece no dashboard.
+# GH_TOKEN e TRIGGER_KEY sao secrets (`wrangler secret put`).
+GH_REPO = "MarcosAlencar04/nba-fantasy-automation"
+GH_WORKFLOW = "nba-fantasy.yml"
+GH_REF = "development"

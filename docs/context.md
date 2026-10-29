@@ -127,6 +127,8 @@ Funções principais:
 | `gate.py` | Portão do GitHub Actions: libera a execução só na janela de 30 min antes do 1º jogo. |
 | `.github/workflows/nba-fantasy.yml` | Agendamento na nuvem: três crons da manhã + pre-jogo a cada 30 min, 1 job por time. |
 | `state.py` | Trava de retry no Postgres: garante um envio por (tipo, dia, time), para os três crons da manhã não virarem três emails. |
+| `scripts/dispatch.py` | Dispara o workflow pela API do GitHub (`workflow_dispatch`). É o gatilho para um agendador externo confiável, já que o cron do Actions é best-effort. |
+| `cloudflare/` | Worker com Cron Trigger que chama o `workflow_dispatch`. Substitui com confiabilidade o agendamento do GitHub; não analisa nada. |
 | `teams.py` | Fonte da lista de usuários: banco (padrão) ou secrets posicionais. Usado pelos jobs `times` e `agente`. |
 | `panel/` | Painel web de ligas e usuários (FastAPI + Jinja2, deploy no Vercel). Inclui o formulário público de sugestões em `/sugestoes`, protegido por `SUGGESTION_KEY`. |
 | `.github/dependabot.yml` | Atualiza actions e dependências Python mensalmente, para não voltar a acumular runtime depreciado. |
@@ -311,6 +313,16 @@ O `schedule` do GitHub Actions é best-effort e derruba a maior parte das execu�
 agendadas (medido: ~6% sobrevivem). Por isso a manhã usa **três** crons fora do minuto 0
 (pico documentado) e `state.py` reserva o envio no banco, de modo que só a primeira
 tentativa que passar notifique.
+
+**Dedupe no pré-jogo.** O gate emite um `slot` junto com a decisão, derivado da hora do
+jogo mais cedo da janela (`pre:20261030T2330`). O job `agente` repassa esse slot como
+`--once-per-day`, então dois crons do mesmo minuto — o do GitHub e o do Worker da
+Cloudflare, por exemplo — calculam o **mesmo** slot e apenas um notifica. Jogos no mesmo
+horário compartilham o slot de propósito: é um email só, cobrindo todos.
+
+**Disparo confiável.** Além dos crons do Actions, o Worker em `cloudflare/` dispara
+`workflow_dispatch` pela API do GitHub. Ele não substitui os crons: convive com eles, e a
+trava do banco resolve a sobreposição.
 
 A janela é **inclusiva nos dois extremos** (`0 < tip − agora ≤ lead`). Isso é essencial: jogos da NBA caem em horários redondos (:00 e :30), iguais aos ticks do cron. Com comparação estrita, o tick exatamente 30 min antes do jogo ficaria de fora e o jogo seria avaliado só no próprio horário do tip-off — tarde demais.
 

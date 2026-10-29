@@ -14,3 +14,9 @@ panel/__pycache__/
 promo/*.png
 promo/*.mp4
 promo/*.webm
+
+# cloudflare worker (cron de disparo)
+cloudflare/node_modules/
+cloudflare/.wrangler/
+cloudflare/.dev.vars*
+cloudflare/worker-configuration.d.ts

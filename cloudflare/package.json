@@ -1,0 +1,16 @@
+{
+  "name": "nba-fantasy-dispatch",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Cron confiavel do NBA Fantasy: dispara o workflow do agente pela API do GitHub.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "test": "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "wrangler": "^4.42.0"
+  }
+}

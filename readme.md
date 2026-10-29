@@ -148,6 +148,113 @@ de 30 min). Com a taxa de ~6%, muitos avisos pre-jogo nao saem. Para garantir en
 diada, a saida e' um agendador externo chamando `workflow_dispatch` via API — o cron do
 GitHub nao oferece garantia.
 
+### Agendador externo (entrega confiavel)
+
+O cron do GitHub nao oferece garantia. Se voce precisa que o relatorio saia todo dia, use
+um agendador que **dispara o workflow** pela API. Isso nao substitui o cron: os dois
+convivem, e a trava em `state.py` garante que so um email saia por dia.
+
+O que qualquer agendador precisa fazer e' um `POST`:
+
+```
+POST https://api.github.com/repos/SEU_USUARIO/nba-fantasy-automation/actions/workflows/nba-fantasy.yml/dispatches
+Authorization: Bearer <TOKEN>
+Accept: application/vnd.github+json
+Content-Type: application/json
+
+{"ref": "development", "inputs": {"mode": "morning"}}
+```
+
+Resposta **204 No Content** = run criado. O `mode` aceita `morning` (relatorio completo) ou
+`gate` (so se estiver perto de jogo). Se `inputs` for omitido, vale o `default: morning` do
+workflow.
+
+#### 1. Criar o token
+
+Use um **fine-grained PAT**, nao um token classico:
+
+1. <https://github.com/settings/personal-access-tokens/new>
+2. **Repository access** → *Only select repositories* → `nba-fantasy-automation`
+3. **Permissions** → *Repository permissions* → **Actions: Read and write**
+   (nada mais; `Contents` pode ficar *No access*)
+4. **Expiration** → 90 dias (anote para renovar)
+5. Gere e copie o `github_pat_...`
+
+Com esse escopo, um vazamento permite apenas disparar/cancelar runs **neste** repositorio.
+Nao le codigo, nao le secrets, nao escreve em branch.
+
+#### 2. Escolher onde agendar
+
+| Opcao | Custo | Precisao | Onde fica o token | Esforco |
+|---|---|---|---|---|
+| **cron-job.org** | gratis | minuto | no painel deles | 5 min, sem codigo |
+| **Cloudflare Worker** | gratis | minuto | secret da Cloudflare (criptografado) | ~20 min, config em codigo |
+| **VPS / `systemd timer`** | voce ja paga | segundo | arquivo no servidor | usa `scripts/dispatch.py` |
+
+**cron-job.org** e' o caminho mais curto:
+
+1. Crie a conta e um cronjob do tipo **POST**.
+2. URL: `https://api.github.com/repos/MarcosAlencar04/nba-fantasy-automation/actions/workflows/nba-fantasy.yml/dispatches`
+3. **Headers** (o `User-Agent` e' ignorado pelo servico, o resto passa):
+   - `Authorization: Bearer github_pat_...`
+   - `Accept: application/vnd.github+json`
+   - `Content-Type: application/json`
+4. **Body**: `{"ref":"development","inputs":{"mode":"morning"}}`
+5. Agendamento: `7 10 * * *` no fuso `America/Sao_Paulo` (o servico tem campo de timezone).
+6. Ligue a **notificacao por email em caso de falha** — e' o que avisa se o token expirar.
+
+O plano gratuito aceita intervalo minimo de 1 minuto, guarda as ultimas 50 execucoes com
+corpo e headers da resposta (util para ver o 204 ou o erro do GitHub) e desativa o job
+sozinho depois de 25 falhas seguidas.
+
+**Cloudflare Worker** se voce preferir nao entregar o token a um terceiro. O worker ja
+esta pronto no repositorio, em `cloudflare/`. Da para configurar **tudo pelo dashboard**,
+sem instalar nada — passo a passo em
+[`cloudflare/SETUP-DASHBOARD.md`](cloudflare/SETUP-DASHBOARD.md). Ou pela linha de comando:
+
+```bash
+cd cloudflare
+npm install
+npx wrangler login
+npx wrangler secret put GH_TOKEN      # cole o github_pat_...
+npx wrangler deploy
+```
+
+O `wrangler.toml` ja traz os quatro crons e o mapeamento cron → modo. Escolha um dos
+caminhos: rodar `wrangler deploy` **substitui** os crons configurados no dashboard (os
+segredos sobrevivem).
+
+Ele nao duplica email com o cron do GitHub: o slot do pre-jogo vem da hora do jogo
+(`pre:20261030T2330`), entao as duas fontes calculam o mesmo slot e a trava do banco deixa
+so uma notificar.
+
+**VPS / maquina propria**: use o helper do repositorio, que ja trata token, erros e
+`--dry-run`:
+
+```bash
+export NBA_DISPATCH_TOKEN=github_pat_...
+python scripts/dispatch.py --mode morning           # dispara
+python scripts/dispatch.py --mode morning --dry-run # mostra o request sem enviar
+```
+
+No `crontab -e`:
+
+```cron
+7 10 * * * cd /caminho/do/repo && NBA_DISPATCH_TOKEN=github_pat_... /usr/bin/python3 scripts/dispatch.py --mode morning >> /var/log/nba-fantasy.log 2>&1
+```
+
+#### 3. Confirmar que funcionou
+
+Depois do primeiro disparo, `git pull` nao e' necessario — o run aparece na aba **Actions**
+com evento `workflow_dispatch`. Se o job `agente` disser:
+
+```
+ja enviado hoje (slot 'morning', time 7); esta execucao e' uma retentativa do cron
+```
+
+significa que **outra** execucao ja enviou naquele dia — a trava funcionou, nao e' erro.
+
+
 O `gate.py` olha apenas o relogio: consulta o placar do ESPN, lista os jogos que ainda vao
 comecar e libera a execucao quando algum deles comeca dentro de `PREGAME_LEAD_MIN` (30 min).
 Cada jogo corresponde a **exatamente uma** execucao, sempre antes do tip-off — inclusive em
