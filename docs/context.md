@@ -237,13 +237,30 @@ A busca cobre seis formatos: **1x1, 2x1, 1x2, 2x2, 3x1 e 1x3** (quantos jogadore
 
 | Filtro | Regra |
 |---|---|
-| Favorece você | ganho na **escalação titular** ≥ 3 FP na semana (`MIN_TRADE_GAIN`) |
-| Não custa escalação a ele | perda dele ≤ 5 FP na semana (`MUTUAL_TOLERANCE`) |
+| Favorece você | ganho na **escalação titular** ≥ 0,5 FP/jogo (`MIN_TRADE_GAIN`) |
+| Não custa escalação a ele | perda dele ≤ 1,2 FP/jogo (`MUTUAL_TOLERANCE`) |
+| Vale o ativo | o que chega + valor das vagas abertas ≥ o que sai |
 | Chance real de aceite | recusa estimada ≤ 60% (`MAX_TRADE_REJECT`), recalculada **depois** do lineup |
 
-O filtro principal é o **ganho de lineup**, não a soma bruta de projeção. Banco não pontua: um 2x1 pode perder dezenas de FP na soma bruta e ainda assim valer +60 FP na escalação, porque os dois jogadores que saem não estavam entrando no time. Um teto absoluto em FP descartaria justamente esse caso e também o "vender caro".
+**Tudo em FP/jogo, sem calendário.** Troca é definitiva e vale pelo resto da temporada, então
+o calendário da semana não pode entrar na conta: um lado com 4 jogos e outro com 2 distorcia
+a comparação e não dizia nada sobre o valor do jogador. Como todos os times jogam ~82
+partidas, FP/jogo equivale ao total da temporada.
 
-A chance de aceite é recalculada com o valor de escalação dos dois lados. Antes ela era estimada no pré-filtro, quando só existia projeção bruta, e por isso aparecia "recusa média" em trocas que tiravam 25 FP do outro dono. Perda pesa 1,6× mais que ganho na conta: quem recusa um prejuízo olha duas vezes, mas não celebra o dobro pelo lucro.
+**Vaga aberta vale um FA de reposição.** Num 2x1, quem termina com o elenco menor recebe
+crédito de `repl` por vaga, porque o slot vago é preenchido por streaming. É o que faz
+`45 + 25` empatar com `35 + 35`. A conta é **assimétrica**: quem *cresce* no elenco não leva
+penalidade equivalente, porque o jogador cortado é o pior do time e normalmente nem escalava
+— penalizar de novo contava duas vezes e reprovava 2x1 que fechavam.
+
+O filtro principal é o **ganho de lineup**, não a soma bruta de projeção. Banco não pontua: um
+2x1 pode perder dezenas de FP na soma bruta e ainda assim valer na escalação, porque os dois
+jogadores que saem não estavam entrando no time.
+
+A chance de aceite é recalculada com o valor de escalação dos dois lados. Antes ela era
+estimada no pré-filtro, quando só existia projeção bruta, e por isso aparecia "recusa média"
+em trocas que tiravam 25 FP do outro dono. Perda pesa 16× mais que ganho, em FP/jogo: quem
+recusa um prejuízo olha duas vezes, mas não celebra o dobro pelo lucro.
 
 Por isso a busca é em duas etapas: um pré-filtro barato pela soma bruta (descartando o que perde mais da metade do que sai, ou que custa ao outro mais da metade do que ele recebe) e depois a reavaliação dos 40 melhores com o otimizador de lineup. Como o pré-filtro pode esconder consolidações, a ordenação dessa etapa credita vagas abertas (`+25` por vaga).
 
@@ -296,20 +313,22 @@ A borda esquerda do cartão é 3px na cor do risco de recusa (4px na melhor), en
 
 ### 5.8 Sinais da semana (comprar e vender)
 
-A seção reúne os dois lados da operação, com regras diferentes por origem do jogador:
+Três blocos **separados**, porque são decisões diferentes — juntar tudo numa lista fazia
+parecer que comprar um FA e montar uma troca eram a mesma coisa:
 
-- **Seu elenco — apenas risco de queda.** Só entram `VENDER_NA_ALTA` (fase acima do
-  sustentável, com motivo: sorte de arremesso ou minutos inflados) e `PAPEL_ENCOLHENDO`
-  (perdendo minutos). "Comprar na baixa" não é ação sobre um jogador que já é seu: nesse
-  caso o veredito é **SEGURAR (fase ruim passageira — não vender agora)**.
-- **Elencos rivais — alvo de troca realista.** `COMPRAR_NA_BAIXA` **e** o dono tem como
-  repor: o jogador não pode ser o 1º ou 2º melhor do elenco dele, nem estar no top 10% de
-  projeção da liga (`target_obtainable`). Sugerir o astro do vizinho não ajuda — ninguém
-  abre mão dele por uma semana ruim. A lista mostra o dono e a posição no elenco
-  (*"é o 6º do elenco dele"*), porque é isso que indica se há conversa.
-- **Free agents — comprar na baixa.** `COMPRAR_NA_BAIXA` com papel estável: projeção boa,
-  fase fria explicada por azar de arremesso e minutos parados. Não entra na lista de add
-  (não ajuda nesta semana) mas entra aqui, para pegar antes de a média voltar.
+- **Sinais da semana — seu elenco, apenas risco de queda.** Só entram `VENDER_NA_ALTA`
+  (fase acima do sustentável, com motivo: sorte de arremesso ou minutos inflados) e
+  `PAPEL_ENCOLHENDO` (perdendo minutos). "Comprar na baixa" não é ação sobre um jogador que
+  já é seu: nesse caso o veredito é **SEGURAR (fase ruim passageira — não vender agora)**.
+- **Alvos de troca — elenco rival.** `COMPRAR_NA_BAIXA` **e** o dono tem como repor: o
+  jogador não pode ser o 1º ou 2º melhor do elenco dele, nem estar no top 10% de projeção da
+  liga (`target_obtainable`). Sugerir o astro do vizinho não ajuda — ninguém abre mão dele
+  por uma semana ruim. A lista mostra o dono e a posição no elenco (*"é o 6º do elenco
+  dele"*), porque é isso que indica se há conversa.
+- **Free agents — comprar na baixa (seção 4).** `COMPRAR_NA_BAIXA` com papel estável:
+  projeção boa, fase fria explicada por azar de arremesso e minutos parados. Não entra na
+  lista de add (não ajuda nesta semana) mas fica em bloco próprio, para pegar antes de a
+  média voltar.
 
 **Sinal só existe com motivo.** `form_tag` devolve `NEUTRO` quando a fase não tem causa
 identificável: queda sem azar de arremesso ou subida sem sorte nem minutos extras não são
