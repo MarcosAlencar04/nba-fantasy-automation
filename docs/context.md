@@ -237,11 +237,13 @@ A busca cobre seis formatos: **1x1, 2x1, 1x2, 2x2, 3x1 e 1x3** (quantos jogadore
 
 | Filtro | Regra |
 |---|---|
-| Favorece você | ganho na **escalação titular** > 0 (`week_value` antes/depois) |
-| Não é absurdo para ele | perda dele ≤ 50% do valor que ele recebe na semana |
-| Chance real de aceite | recusa estimada ≤ 70% |
+| Favorece você | ganho na **escalação titular** ≥ 3 FP na semana (`MIN_TRADE_GAIN`) |
+| Não custa escalação a ele | perda dele ≤ 5 FP na semana (`MUTUAL_TOLERANCE`) |
+| Chance real de aceite | recusa estimada ≤ 60% (`MAX_TRADE_REJECT`), recalculada **depois** do lineup |
 
 O filtro principal é o **ganho de lineup**, não a soma bruta de projeção. Banco não pontua: um 2x1 pode perder dezenas de FP na soma bruta e ainda assim valer +60 FP na escalação, porque os dois jogadores que saem não estavam entrando no time. Um teto absoluto em FP descartaria justamente esse caso e também o "vender caro".
+
+A chance de aceite é recalculada com o valor de escalação dos dois lados. Antes ela era estimada no pré-filtro, quando só existia projeção bruta, e por isso aparecia "recusa média" em trocas que tiravam 25 FP do outro dono. Perda pesa 1,6× mais que ganho na conta: quem recusa um prejuízo olha duas vezes, mas não celebra o dobro pelo lucro.
 
 Por isso a busca é em duas etapas: um pré-filtro barato pela soma bruta (descartando o que perde mais da metade do que sai, ou que custa ao outro mais da metade do que ele recebe) e depois a reavaliação dos 40 melhores com o otimizador de lineup. Como o pré-filtro pode esconder consolidações, a ordenação dessa etapa credita vagas abertas (`+25` por vaga).
 
@@ -296,12 +298,32 @@ A borda esquerda do cartão é 3px na cor do risco de recusa (4px na melhor), en
 
 A seção reúne os dois lados da operação, com regras diferentes por origem do jogador:
 
-- **Seu elenco — apenas risco de queda.** Só entram `VENDER_NA_ALTA` (fase acima do sustentável) e `PAPEL_ENCOLHENDO` (perdendo minutos). "Comprar na baixa" não é ação sobre um jogador que já é seu: nesse caso o veredito é **SEGURAR (fase ruim passageira — não vender agora)**.
-- **Elencos rivais — alvo de compra.** `COMPRAR_NA_BAIXA` com projeção acima do nível de reposição. A lista mostra o dono atual, porque a aquisição é por troca.
+- **Seu elenco — apenas risco de queda.** Só entram `VENDER_NA_ALTA` (fase acima do
+  sustentável, com motivo: sorte de arremesso ou minutos inflados) e `PAPEL_ENCOLHENDO`
+  (perdendo minutos). "Comprar na baixa" não é ação sobre um jogador que já é seu: nesse
+  caso o veredito é **SEGURAR (fase ruim passageira — não vender agora)**.
+- **Elencos rivais — alvo de troca realista.** `COMPRAR_NA_BAIXA` **e** o dono tem como
+  repor: o jogador não pode ser o 1º ou 2º melhor do elenco dele, nem estar no top 10% de
+  projeção da liga (`target_obtainable`). Sugerir o astro do vizinho não ajuda — ninguém
+  abre mão dele por uma semana ruim. A lista mostra o dono e a posição no elenco
+  (*"é o 6º do elenco dele"*), porque é isso que indica se há conversa.
+- **Free agents — comprar na baixa.** `COMPRAR_NA_BAIXA` com papel estável: projeção boa,
+  fase fria explicada por azar de arremesso e minutos parados. Não entra na lista de add
+  (não ajuda nesta semana) mas entra aqui, para pegar antes de a média voltar.
+
+**Sinal só existe com motivo.** `form_tag` devolve `NEUTRO` quando a fase não tem causa
+identificável: queda sem azar de arremesso ou subida sem sorte nem minutos extras não são
+sinais, são ruído. `ALTA_SUSTENTAVEL` existe para **não** gerar ação — é a ausência de um
+motivo para esperar queda.
 
 ### 5.9 Free agents
 
-Só entram candidatos que estão **pontuando bem**: projeção ≥ nível de reposição, `conf ≥ 0,2` (amostra mínima) e média recente ≥ 85% do nível de reposição. Jogadores em `PAPEL_ENCOLHENDO` ou com amostra pequena são descartados antes da otimização de add/drop.
+Só entram candidatos que estão **pontuando bem**: projeção ≥ nível de reposição,
+`conf ≥ 0,2` (amostra mínima) e média recente ≥ 85% do nível de reposição. Jogadores em
+`PAPEL_ENCOLHENDO` ou com amostra pequena são descartados antes da otimização de add/drop.
+
+O universo anterior a esse corte é preservado (`fa_all`) para alimentar a lista de
+**comprar na baixa**: sem isso, o próprio filtro de add matava o sinal de baixa.
 
 A **agenda da semana** aparece ao lado de cada candidato: dois jogadores com projeção parecida valem coisas diferentes se um tem 4 jogos e o outro tem 2. A coluna `FP na semana` mostra o total real e, entre parênteses, os cenários otimista e pessimista — os mesmos três cenários usados na avaliação de trocas.
 

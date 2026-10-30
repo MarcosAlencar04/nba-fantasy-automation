@@ -79,6 +79,27 @@ TRADE_DEADLINE = date(2027, 3, 22)
 HORIZON_EXTRA_GAMES = 6      # peso do ganho "por jogo" (valor alem da semana) no ranking de adds
 PEN = 1e4                    # penalidade p/ celula inviavel na atribuicao
 
+# Tolerancia (FP na semana) para o outro lado sair "perdendo" numa troca.
+# Serve de limite duro contra propostas absurdas. Quem decide de fato e a
+# estimativa de recusa, que e recalculada com o valor de escalacao dos dois
+# lados — por isso a tolerancia pode ser folgada sem virar sugestao ruim.
+MUTUAL_TOLERANCE = 5.0
+
+# Ganho minimo no MEU lineup (FP na semana) para a troca valer a linha do
+# relatorio. Abaixo disto e ruido do otimizador: propor "+1 FP" nao muda decisao
+# nenhuma e so gasta a confianca nas outras sugestoes.
+MIN_TRADE_GAIN = 3.0
+
+# Recusa estimada acima da qual a troca nem entra na lista. Acima disto a
+# proposta e desperdicio de tempo: o outro dono recusa sem pensar.
+MAX_TRADE_REJECT = 60
+
+# Alvo de compra em elenco rival: percentil de projecao a partir do qual o
+# jogador e tratado como estrela e some das sugestoes. Quem tem um desses
+# raramente abre mao por causa de uma semana fria, entao sugerir so gasta a
+# linha do relatorio.
+STAR_PERCENTILE = 0.90
+
 # Peso (em fantasy points) de um arremesso convertido ALEM do esperado:
 #   FGM vale 4 (2 de PTS + 2 de FGM); 3PM vale +2 (1 de PTS extra + 1 de 3PM); FTM vale 2.
 LUCK_W = (4.0, 2.0, 2.0)
@@ -455,7 +476,22 @@ def build_profiles(cur, prev, recent_n=5):
 
 
 def form_tag(p, recent_n=5):
-    """Classifica a fase do jogador (regressao a media)."""
+    """Classifica a fase do jogador — e so devolve sinal quando ha motivo.
+
+    Regra: a fase so vira recomendacao quando existe uma razao concreta para ela
+    virar. Sem isso o relatorio estaria chutando "vai subir" ou "vai cair" em
+    cima de ruido, e sugestao que nao se sustenta gasta a confianca em todas as
+    outras.
+
+      * VENDER_NA_ALTA   — acima da projecao por sorte de arremesso ou minutos
+        inflados. Os dois voltam ao normal: e o momento de vender.
+      * PAPEL_ENCOLHENDO — perdeu minutos. Nao e fase, e mudanca de papel; nao
+        existe "voltar ao normal" para esperar.
+      * COMPRAR_NA_BAIXA — abaixo da projecao por azar de arremesso COM papel
+        estavel. Se os minutos cairam, nao e baixa: e perda de espaco.
+      * ALTA_SUSTENTAVEL — esta bem sem sinal de sorte nem de minutos extras.
+        Deliberadamente NAO vira acao: nao ha razao para esperar queda.
+    """
     n = min(p["gp"], recent_n)
     if n < 3:
         return "AMOSTRA_PEQUENA", ["menos de 3 jogos na temporada"]
@@ -472,10 +508,15 @@ def form_tag(p, recent_n=5):
     if p["delta_form"] <= -thr:
         if p["min_delta"] <= -4:
             return "PAPEL_ENCOLHENDO", [f"minutos cairam {p['min_delta']:+.1f}"]
-        if p["luck5"] <= -1.5:
-            why.append(f"azar de arremesso (~{p['luck5']:+.1f} FP/jogo)")
-        why.append("minutos estaveis")
-        return "COMPRAR_NA_BAIXA", why
+        # Baixa acionavel = azar de arremesso com o papel intacto. Sem os dois,
+        # a queda pode ser calendario, adversario ou simples variacao: nada
+        # indica que vai subir.
+        if p["luck5"] <= -1.5 and p["min_delta"] >= -2.0:
+            return "COMPRAR_NA_BAIXA", [
+                f"azar de arremesso (~{p['luck5']:+.1f} FP/jogo)",
+                "minutos estaveis",
+            ]
+        return "NEUTRO", []
     return "NEUTRO", []
 
 
@@ -1130,6 +1171,41 @@ def _perceived_sum(players):
     return sum(_num(p["perceived"]) for p in players)
 
 
+def star_cutoff(profiles, percentile=STAR_PERCENTILE):
+    """Projecao a partir da qual o jogador conta como estrela da liga.
+
+    Usado para nao sugerir compra de quem ninguem vende. Considera apenas
+    jogadores com amostra suficiente, senao um inicio de temporada com poucos
+    jogos distorceria o corte.
+    """
+    vals = sorted((_num(p["proj_fppg"]) for p in profiles.values()
+                   if not p["stale"] and _num(p["conf"]) >= 0.5), reverse=True)
+    if len(vals) < 20:
+        return 0.0
+    idx = max(0, min(len(vals) - 1, int(len(vals) * (1 - percentile))))
+    return vals[idx]
+
+
+def target_obtainable(profile, their_roster, cut):
+    """O dono tem motivo realista para negociar este jogador?
+
+    Sugerir "compra na baixa" do melhor jogador do elenco alheio nao ajuda
+    ninguem: quem tem um astro nao abre mao dele por causa de uma semana ruim,
+    porque sabe que a media volta. O que realmente muda de mao e o 3o/4o/5o
+    jogador do elenco — ali o dono tem substituto e a perda doi menos.
+
+    Devolve (ok, motivo_da_recusa, posicao_no_elenco_dele).
+    """
+    proj = _num(profile["proj_fppg"])
+    better = sum(1 for x in their_roster if _num(x["proj_fppg"]) > proj)
+    rank = better + 1
+    if len(their_roster) >= 4 and rank <= 2:
+        return False, f"e o {rank}o melhor do elenco dele", rank
+    if cut and proj >= cut:
+        return False, "estrela da liga (top 10% em projecao)", rank
+    return True, "", rank
+
+
 def trade_legal(give, get, my_roster, their_roster, max_roster):
     """Limites duros do ESPN para a troca.
 
@@ -1214,8 +1290,18 @@ def trade_eval(give, get, my_roster, their_roster, their_record, ctx, days_list,
 def trade_accept(give, get, their_roster, their_record, theirs):
     """Estima (0-100) a chance de o outro dono aceitar uma troca N x M.
 
-    Combina o que ele ve no ESPN, o ganho real dele na semana, a variacao da media
-    do elenco, necessidade posicional, lesao e situacao na tabela.
+    Combina o que ele ve no ESPN, o ganho dele na semana, a variacao da media do
+    elenco, necessidade posicional, lesao e situacao na tabela.
+
+    Usa `theirs["lineup"]` quando disponivel (o numero que decide de verdade:
+    banco nao pontua) e cai para `theirs["real"]` no pre-filtro barato, onde o
+    otimizador de lineup ainda nao rodou.
+
+    Perda pesa mais que ganho: um dono recusa uma troca que lhe custa 20 FP na
+    escalacao com muito mais facilidade do que aceita uma que lhe rende 20. Sem
+    esse peso, a estimativa dava "recusa media" para trocas claramente ruins para
+    ele — foi o que aconteceu no relatorio de 27/10, onde a primeira sugestao
+    tirava 25 FP do outro lado e ainda aparecia como recusa media.
     """
     give, get = list(give), list(get)
     factors = []
@@ -1230,13 +1316,15 @@ def trade_accept(give, get, their_roster, their_record, theirs):
     else:
         factors.append("no ESPN a troca parece equilibrada")
 
-    # 2) ganho real dele na semana (lineup otimizado)
-    wg = theirs["real"]
-    score += clamp(wg * 0.7, -25.0, 20.0)
+    # 2) efeito no lineup dele: prefere o valor de escalacao ao bruto
+    lineup_known = isinstance(theirs.get("lineup"), (int, float))
+    wg = theirs["lineup"] if lineup_known else theirs["real"]
+    onde = "na escalacao dele" if lineup_known else "na projecao bruta"
+    score += clamp(wg * (1.6 if wg < 0 else 0.7), -25.0, 20.0)
     if wg >= 5:
-        factors.append(f"ele ganha {wg:+.0f} FP na semana")
+        factors.append(f"ele ganha {wg:+.0f} FP {onde}")
     elif wg <= -5:
-        factors.append(f"ele perde {wg:+.0f} FP na semana")
+        factors.append(f"ele perde {wg:+.0f} FP {onde}")
 
     # 3) agenda: mais jogos costuma agradar
     if theirs["delta_games"] > 0:
@@ -1370,7 +1458,7 @@ def find_trades(my_roster, give_pool, teams, pool, base_ids, base_week, days,
                         continue
                     if ev["theirs"]["real"] < -0.5 * max(1.0, ev["theirs"]["points_in"]):
                         continue
-                    if ev["risk"]["reject"] > 70:
+                    if ev["risk"]["reject"] > MAX_TRADE_REJECT:
                         continue
                     cheap.append((ev, give, get))
 
@@ -1386,18 +1474,37 @@ def find_trades(my_roster, give_pool, teams, pool, base_ids, base_week, days,
                                  pool, days) - base_week
             wg_theirs = week_value([i for i in their_base_ids if i not in get_pids]
                                    + give_pids, pool, days) - their_base_week
-            if wg_mine <= 0:
+            if wg_mine < MIN_TRADE_GAIN:
                 continue
-            if wg_theirs < -0.5 * max(1.0, ev["theirs"]["points_in"]):
+            # Troca justa: o outro lado nao pode sair perdendo na escalacao.
+            # O criterio antigo (-50% do pacote recebido) deixava passar trocas
+            # que tiravam 25 FP dele — nenhum dono aceita, e sugerir isso so
+            # gastava a linha do relatorio.
+            if wg_theirs < -MUTUAL_TOLERANCE:
                 continue
 
             ev["mine"]["lineup"] = wg_mine
             ev["theirs"]["lineup"] = wg_theirs
+            # Recalcula a chance de aceite AGORA, com o valor de escalacao dos
+            # dois lados. Antes ela era estimada no pre-filtro, quando so havia
+            # projecao bruta — era por isso que aparecia "recusa media" em troca
+            # claramente ruim para ele.
+            ev["risk"] = trade_accept(give, get, their_roster, their_record,
+                                      ev["theirs"])
+            # O corte de recusa vale de novo aqui: no pre-filtro ele foi
+            # estimado com projecao bruta, antes de saber o efeito real no
+            # lineup dele.
+            if ev["risk"]["reject"] > MAX_TRADE_REJECT:
+                continue
 
-            # ganho de lineup manda; cenario otimista e vaga aberta desempatam
+            # ganho de lineup manda; cenario otimista e vaga aberta desempatam.
+            # O termo `wg_theirs` premia o acordo que tambem faz sentido para
+            # ele: entre duas trocas com o mesmo ganho meu, vale mais a que ele
+            # aceita sem sangrar.
             score = (wg_mine * 0.55 + ev["mine"]["up"] * 0.20
                      + ev["mine"]["real"] * 0.10
-                     + ev["mine"]["open_slots"] * 6.0)
+                     + ev["mine"]["open_slots"] * 6.0
+                     + min(wg_theirs, 30.0) * 0.25)
             score *= 0.55 + 0.45 * (ev["risk"]["accept"] / 100)
             rows.append(dict(team=tname, give=give, get=get, wg=wg_mine,
                              ev=ev, score=score, shape=ev["shape"]))
@@ -1503,7 +1610,7 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
     digest = dict(date=today, lineup=[], bench=[], alerts=[], adds=[], trades=[], ir=[],
                   total=0.0, week="", repl=0.0, empty_slots=0,
                   ir_used=0, ir_free=IR_SLOTS, tight=[], lineup_choice=False,
-                  sells=[], buys=[], changes=[], changes_known=False,
+                  sells=[], buys=[], fa_buys=[], changes=[], changes_known=False,
                   changes_leftover=0,
                   lineup_only=bool(getattr(opts, "lineup_only", False)))
 
@@ -1606,6 +1713,11 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
     healthy = sorted((c["proj_fppg"] for c in cands), reverse=True)
     repl = healthy[4] if (fa_players and len(healthy) >= 5) else opts.replacement
 
+    # Guarda o universo antes do corte de "ajuda agora": free agent em fase fria
+    # nao entra na lista de add, mas pode ser justamente o alvo de compra na
+    # baixa. Eram a mesma lista, e o filtro de add matava o sinal de baixa.
+    fa_all = list(cands)
+
     # Free agent so entra na lista se estiver pontuando bem: projecao acima do nivel
     # de reposicao e sem sinal de queda. Quem esta em baixa nao ajuda agora.
     cands = [c for c in cands
@@ -1615,6 +1727,18 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
              and c["fp5"] >= repl * 0.85]
     for c in cands:
         pool[c["pid"]] = c
+
+    # ---- comprar na baixa: SO free agent ---------------------------------
+    # O sinal vale para quem esta livre no mercado: projecao boa, fase fria por
+    # azar de arremesso e papel estavel. Para jogador de elenco rival a sugestao
+    # seria inutil (o dono nao vende por uma semana ruim) — essa parte mora na
+    # secao de trocas, com filtro de negociabilidade.
+    digest["fa_buys"] = sorted(
+        (c for c in fa_all
+         if c["tag"] == "COMPRAR_NA_BAIXA"
+         and c["conf"] >= 0.4
+         and c["proj_fppg"] >= repl * 0.9),
+        key=lambda c: -c["proj_fppg"])[:5]
 
     # ---- cabecalho ---------------------------------------------------
     digest.update(week=f"{week_start:%d/%m} a {week_end:%d/%m}",
@@ -1844,8 +1968,11 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
     if not flags:
         L.append("- Nenhum sinal forte de regressao no momento (amostra ainda pequena? veja 'conf' abaixo).")
     for e in flags:
-        lab = {"VENDER_NA_ALTA": "VENDER NA ALTA", "COMPRAR_NA_BAIXA": "COMPRAR NA BAIXA / SEGURAR",
-               "PAPEL_ENCOLHENDO": "PAPEL ENCOLHENDO", "ALTA_SUSTENTAVEL": "Alta sustentavel"}[e["tag"]]
+        # Só dois sinais viram item no relatório: venda na alta (há motivo para
+        # queda) e papel encolhendo (perdeu minutos). Comprar na baixa é ação de
+        # aquisição, então aparece na seção 4 (free agents), não aqui no elenco.
+        lab = {"VENDER_NA_ALTA": "VENDER NA ALTA",
+               "PAPEL_ENCOLHENDO": "PAPEL ENCOLHENDO"}[e["tag"]]
         conf = "" if e["conf"] >= 0.5 else " [amostra pequena: confianca baixa]"
         digest["alerts"].append(dict(name=e["name"], team=e["team"], tag=e["tag"], label=lab,
                                      why=e["why"], conf=e["conf"],
@@ -1865,8 +1992,16 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
     if other_teams:
         my_pids = {e["pid"] for e in roster}
         seen_buy = {s["name"] for s in digest["sells"]}
+        cut = star_cutoff(profiles)
+        skipped_stars = []
         for entry in other_teams:
             tname, plist = entry[0], entry[1]
+            # Projecao do elenco dele: e o que diz quem ele nao entrega.
+            theirs_prof = []
+            for y in plist:
+                ypid, _ = idx.find(y["name"])
+                if ypid is not None and ypid in profiles:
+                    theirs_prof.append(profiles[ypid])
             for x in plist:
                 pid, _ = idx.find(x["name"])
                 if pid is None or pid in my_pids:
@@ -1879,20 +2014,32 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
                     continue
                 if prof["name"] in seen_buy:
                     continue
+                ok, motivo, rank = target_obtainable(prof, theirs_prof, cut)
+                if not ok:
+                    skipped_stars.append(f"{prof['name']} ({tname}: {motivo})")
+                    continue
                 seen_buy.add(prof["name"])
                 digest["buys"].append(dict(
                     name=prof["name"], team=prof["team"], owner=tname,
                     proj=prof["proj_fppg"], recent=prof["fp5"], why=why,
+                    rank=rank, roster_size=len(theirs_prof),
                     status=norm_status(x.get("status"))))
-        digest["buys"].sort(key=lambda b: -b["proj"])
+        # Ordena pelo que e mais facil de tirar (mais longe do topo do elenco
+        # dele) e depois pela projecao: alvo negociavel vale mais que alvo bom.
+        digest["buys"].sort(key=lambda b: (b["rank"], -b["proj"]))
         digest["buys"] = digest["buys"][:6]
         if digest["buys"]:
-            L.append("**Alvos de compra nos elencos rivais** (fase de baixa: o dono pode vender barato):")
+            L.append("**Alvos realistas nos elencos rivais** (fase de baixa e o dono "
+                     "tem como repor — nao sao os melhores do time dele):")
             for b in digest["buys"]:
                 L.append(f"- {b['name']} ({b['team']}, de {b['owner']}): proj {b['proj']:.1f}/jogo, "
-                         f"FP ult.{opts.recent} {b['recent']:.1f} - " + "; ".join(b["why"]))
+                         f"FP ult.{opts.recent} {b['recent']:.1f} - " + "; ".join(b["why"])
+                         + f". E o {b['rank']}o do elenco dele: ha espaco para negociar.")
             L.append("")
-    L.append("")
+        if skipped_stars:
+            L.append("*Fora da lista por serem intocaveis na pratica: "
+                     + "; ".join(skipped_stars[:6]) + ".*")
+            L.append("")
 
     # ficha avancada
     L += ["**Metricas avancadas do elenco** (proj = projecao por jogo ajustada por sorte e regredida a temporada passada; "
@@ -1987,6 +2134,22 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
         L += ["", "Waivers duram 1 dia: o claim processa no dia seguinte. Se o candidato for DTD, confira o status antes."]
     L.append("")
 
+    # ---- comprar na baixa (free agents) ------------------------------
+    # Separado do add/drop de proposito: aqui nao se ganha ponto nesta semana,
+    # se antecipa o jogador antes de a media voltar. So entra free agent, porque
+    # em elenco rival voce nao compra — voce negocia (secao 5).
+    if digest["fa_buys"]:
+        L.append("**Comprar na baixa (free agents em fase fria com papel estavel)** — "
+                 "nao ajudam hoje; entram agora porque a queda e de arremesso, nao de "
+                 "minutos, e a media deve voltar:")
+        for c in digest["fa_buys"]:
+            livres = "livre no mercado" if fa_players else "confira se esta livre na liga"
+            L.append(f"- {c['name']} ({c['team']}, {'/'.join(sorted(c['elig'])) or '?'}): "
+                     f"proj {c['proj_fppg']:.1f}/jogo vs {c['fp5']:.1f} de media nos ultimos "
+                     f"{opts.recent} — " + "; ".join(c["why"]) + f". {livres.capitalize()}.")
+        L.append("")
+    L.append("")
+
     # ========== 4) TROCAS ==============================================
     L += ["## 5. Trocas", ""]
     sells = sorted((e for e in roster if e["tag"] == "VENDER_NA_ALTA"), key=lambda e: -e["delta_form"])
@@ -2015,13 +2178,16 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
                                     MAX_ROSTER)
 
         if not out:
-            L.append("Nenhuma troca passou nos filtros: precisa ganhar pontos no lineup "
-                     "titular, nao custar ao outro dono mais da metade do valor que ele recebe "
-                     "na semana e ter recusa estimada <= 70%.")
+            L.append("Nenhuma troca passou nos filtros. O criterio e de mão dupla: a "
+                     "troca precisa ganhar pontos no **seu** lineup titular e **não pode "
+                     "custar escalação** ao outro dono. Quando nada aparece, é porque as "
+                     "opções analisadas só funcionavam melhorando um lado — e essas são "
+                     "recusadas na prática.")
         else:
             L.append("Trocas avaliadas **dos dois lados**, em pacotes de **1x1, 2x1, 2x2, "
-                     "1x2, 3x1 e 1x3**. Entram apenas as que melhoram o seu lineup titular e "
-                     "que o outro dono tem chance real de aceitar.")
+                     "1x2, 3x1 e 1x3**. Entram apenas as que ganham pontos no seu lineup "
+                     "titular e **nao custam escalacao** ao outro dono — proposta que so melhora "
+                     "um lado e recusada antes de voce mandar.")
             L.append("")
             rows = []
             for r in out:
@@ -2037,7 +2203,8 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
                     sgn(mine["lineup"], 0),
                     sgn(theirs["lineup"], 0),
                     f"{mine['avg_delta']:+.1f} / {theirs['avg_delta']:+.1f}",
-                    f"+{mine['up']:.0f} / {mine['down']:+.0f}",
+                    f"{mine['up']:+.0f}/{mine['down']:+.0f} vs "
+                    f"{theirs['up']:+.0f}/{theirs['down']:+.0f}",
                     vagas,
                     risco_lesao,
                     f"{risk['label']} ({risk['reject']}%)"))
@@ -2055,6 +2222,7 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
                     mine_real=mine["lineup"], theirs_real=theirs["lineup"],
                     mine_raw=mine["real"], theirs_raw=theirs["real"],
                     mine_up=mine["up"], mine_down=mine["down"],
+                    theirs_up=theirs["up"], theirs_down=theirs["down"],
                     mine_avg=mine["avg_delta"], theirs_avg=theirs["avg_delta"],
                     mine_injury=mine["injury"], mine_injury_txt=mine["injury_txt"],
                     theirs_injury=theirs["injury"],
@@ -2066,17 +2234,25 @@ def run_analysis(cur, prev, sched, tstats, positions, roster_rows, today, opts,
             L += md_table(
                 ["Time", "Formato", "Voce da", "Voce recebe", "Proj/jogo", "Jogos sem.",
                  "Lineup (voce)", "Lineup (ele)", "Media elenco (voce/ele)",
-                 "Otimista/Pessimista", "Vagas", "Lesao", "Recusa"], rows)
+                 "Cenario otim/pess (voce vs ele)", "Vagas", "Lesao", "Recusa"], rows)
             L.append("")
             L.append("**Leitura de cada coluna:**")
             L.append("- **Formato**: quantos voce entrega x quantos recebe. `2x1` consolida "
                      "dois medios em um bom; `1x2` abre o elenco para dois jogadores.")
             L.append("- **Lineup (voce/ele)**: pontos ganhos na **escalacao titular** de cada "
-                     "lado na semana — e o numero que decide, porque banco nao pontua.")
+                     "lado na semana — e o numero que decide, porque banco nao pontua. "
+                     "Troca so entra na lista se ele **nao perder** escalacao: sem isso a "
+                     "proposta e recusada antes de voce mandar.")
+            L.append("- **Cenario otim/pess**: a mesma conta para os dois lados (sorte de "
+                     "arremesso voltando ao normal). Comparar so o seu lado inflava a "
+                     "proposta.")
             L.append("- **Vagas**: quanto o seu elenco cresce (+) ou encolhe (-). `+1` significa "
                      "uma vaga livre para streamer, mas voce gasta um add para preencher.")
             L.append("- **Media elenco**: quanto a media de projecao do elenco varia para cada lado.")
-            L.append("- **Otimista/Pessimista**: e se a sorte de arremesso voltar ao normal.")
+            L.append("")
+            L.append("Se **Lineup (ele)** vier negativo, ele entrega pontos na semana: a troca "
+                     "pode ser boa, mas conte com contraproposta. Quanto mais perto de zero, mais "
+                     "facil fechar.")
             L.append("")
             L.append("**Por que cada recusa:**")
             for r in out[:5]:
@@ -2493,7 +2669,8 @@ def render_email_html(d):
     alerts = d.get("alerts") or []
     sells = d.get("sells") or []
     buys = d.get("buys") or []
-    if alerts or sells or buys:
+    fa_buys = d.get("fa_buys") or []
+    if alerts or sells or buys or fa_buys:
         cards = []
         for a in alerts:
             _, bg, fg = TAG_STYLE.get(a["tag"], ("", GREY_BG, GREY_FG))
@@ -2508,6 +2685,12 @@ def render_email_html(d):
                 f'letter-spacing:.4px">{esc(a["label"])}</span></div>'
                 f'<div style="color:{MUTED};font-size:12px;margin-top:4px">{why}</div></div>')
         for b in buys:
+            # A posicao no elenco dele e o que diz se a compra e realista: o
+            # 4o/5o jogador muda de mao, o 1o nao.
+            rank_txt = ""
+            if b.get("rank") and b.get("roster_size"):
+                rank_txt = (f' · {b["rank"]}&#186; do elenco dele '
+                            f'(de {b["roster_size"]})')
             cards.append(
                 f'<div style="border-left:3px solid {GREEN_FG};background:{SOFT};padding:11px 14px;'
                 f'border-radius:6px;margin-bottom:8px">'
@@ -2515,11 +2698,25 @@ def render_email_html(d):
                 f'{esc(b["name"])}</span> <span style="color:{MUTED}">{esc(b["team"])}</span> '
                 f'<span style="display:inline-block;padding:2px 8px;border-radius:999px;'
                 f'background:{GREEN_BG};color:{GREEN_FG};font-size:10px;font-weight:700;'
-                f'text-transform:uppercase;letter-spacing:.4px">Alvo de compra</span></div>'
+                f'text-transform:uppercase;letter-spacing:.4px">Alvo de troca</span></div>'
                 f'<div style="color:{MUTED};font-size:12px;margin-top:4px">'
                 f'dono: {esc(b["owner"])} · proj {b["proj"]:.1f}/jogo · '
-                f'FP ult. {b["recent"]:.1f}</div></div>')
-        rows.append(_section("Sinais da semana", "Quem vender na sua equipe e quem tentar comprar"))
+                f'FP ult. {b["recent"]:.1f}{rank_txt}</div></div>')
+        for c in fa_buys:
+            cards.append(
+                f'<div style="border-left:3px solid {BLUE_FG};background:{SOFT};padding:11px 14px;'
+                f'border-radius:6px;margin-bottom:8px">'
+                f'<div style="font-size:13px"><span style="font-weight:700;color:{INK}">'
+                f'{esc(c["name"])}</span> <span style="color:{MUTED}">{esc(c["team"])}</span> '
+                f'<span style="display:inline-block;padding:2px 8px;border-radius:999px;'
+                f'background:{BLUE_BG};color:{BLUE_FG};font-size:10px;font-weight:700;'
+                f'text-transform:uppercase;letter-spacing:.4px">Comprar na baixa</span></div>'
+                f'<div style="color:{MUTED};font-size:12px;margin-top:4px">'
+                f'free agent · proj {c["proj_fppg"]:.1f}/jogo · '
+                f'FP ult. {c["fp5"]:.1f} · {esc(" · ".join(c["why"][:2]))}</div></div>')
+        rows.append(_section("Sinais da semana",
+                             "Vender na alta no seu elenco · alvos de troca realistas · "
+                             "comprar na baixa entre os free agents"))
         rows.append(f'<tr><td style="padding:0 28px">{"".join(cards)}</td></tr>')
 
     # ---------- IR e status ----------
@@ -2666,6 +2863,8 @@ def render_email_html(d):
                 f'</tr></table>')
 
             # ---- metrica principal: ganho no lineup titular
+            # Os cenarios aparecem para os DOIS lados. Mostrar so o meu inflava a
+            # proposta: eu via "otimista +22" e ele nao via nada.
             cenarios = ""
             if isinstance(t.get("mine_up"), (int, float)):
                 cenarios = (f'<span style="color:{MUTED};font-size:10px"> · cenarios '
@@ -2673,6 +2872,13 @@ def render_email_html(d):
                             f'<span style="color:{MUTED}">/</span>'
                             f'<span style="color:{AMBER_FG}">{t.get("mine_down", 0):+.0f}</span>'
                             f'</span>')
+            cenarios_deles = ""
+            if isinstance(t.get("theirs_up"), (int, float)):
+                cenarios_deles = (f'<div style="color:{MUTED};font-size:10px">cenarios '
+                                  f'<span style="color:{GREEN_FG}">{t["theirs_up"]:+.0f}</span>'
+                                  f'<span style="color:{MUTED}">/</span>'
+                                  f'<span style="color:{AMBER_FG}">'
+                                  f'{t.get("theirs_down", 0):+.0f}</span></div>')
             hero = (
                 f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
                 f'border="0" style="margin-top:10px"><tr>'
@@ -2684,7 +2890,7 @@ def render_email_html(d):
                 f'<td align="right" valign="bottom" style="white-space:nowrap">'
                 f'<span style="color:{MUTED};font-size:10px">no dele </span>'
                 f'<span style="color:{GREEN_FG if their_gain >= 0 else RED_FG};font-size:13px;'
-                f'font-weight:700">{their_gain:+.0f}</span></td></tr></table>')
+                f'font-weight:700">{their_gain:+.0f}</span>{cenarios_deles}</td></tr></table>')
 
             # ---- faixa de contexto, tudo numa linha so
             meta = []
