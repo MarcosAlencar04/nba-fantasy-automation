@@ -1,5 +1,5 @@
-nba_api>=1.5
-espn-api>=0.39
+nba_api>=1.12.0
+espn-api>=1.0.1
 pandas
 numpy
 scipy
@@ -9,4 +9,4 @@ tzdata
 
 # Cliente do Postgres, usado por teams.py para ler a lista de usuarios do banco.
 # O agente em si nao usa, mas o passo "Resolver destinatario" do workflow sim.
-psycopg[binary]==3.2.10
+psycopg[binary]==3.3.6
